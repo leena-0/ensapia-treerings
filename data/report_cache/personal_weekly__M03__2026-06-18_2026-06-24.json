@@ -1,0 +1,65 @@
+{
+  "input_hash": "0a3cb9a6415bd0007c31ab778bb3e35b5ab885a08306445269c8d039b259fd94",
+  "model": "gemini/gemini-flash-latest",
+  "used_fallback": false,
+  "generated_at": "2026-07-24T04:19:24.045125+00:00",
+  "content": {
+    "member_id": "M03",
+    "week_start": "2026-06-18",
+    "week_end": "2026-06-24",
+    "highlights": [
+      {
+        "text": "튜토리얼 완료율 상승이 초기 리텐션 개선으로 이어지는 것을 확인하고 전체 적용 여부 검토 진행",
+        "log_ids": [
+          "L0238",
+          "L0242"
+        ]
+      }
+    ],
+    "goal_progress": [
+      {
+        "goal_id": "G05",
+        "title": "신규 유저 온보딩 개선 실험",
+        "kpi_causal_summary": "튜토리얼 완료율 상승이 초기 리텐션 개선으로 이어지는 것을 확인하여 전체 적용 여부를 검토 중임. 연결 KPI는 D7_Retention(현재 9.5% → 목표 12.0%) 및 DAU(현재 86,400명 → 목표 112,000명)임.",
+        "citations": [
+          {
+            "log_id": "L0238",
+            "date": "2026-06-21",
+            "excerpt": "튜토리얼 완료율 상승이 초기 리텐션 개선으로 이어지는 것을 확인, 전체 적용 여부 검토 중."
+          },
+          {
+            "log_id": "L0242",
+            "date": "2026-06-24",
+            "excerpt": "튜토리얼 완료율 상승이 초기 리텐션 개선으로 이어지는 것을 확인, 전체 적용 여부 검토 중."
+          }
+        ],
+        "progress": {
+          "worked_days": 15,
+          "stage": 3,
+          "total_stages": 5,
+          "last_date": "2026-06-24",
+          "freshness": "30일째 작업 없음"
+        }
+      }
+    ],
+    "issues": [
+      {
+        "text": "튜토리얼 단순화 버전에서 일부 iOS 기기 크래시 리포트 발생 및 앱개발팀 긴급 확인 요청",
+        "log_ids": [
+          "L0238",
+          "L0242"
+        ]
+      }
+    ],
+    "one_on_one_agenda": [
+      {
+        "text": "튜토리얼 단순화 버전 전체 적용 여부 결정 및 일부 iOS 기기 크래시 리포트 관련 앱개발팀 대응 상황 점검",
+        "log_ids": [
+          "L0238",
+          "L0242"
+        ]
+      }
+    ],
+    "next_week_priorities": []
+  }
+}

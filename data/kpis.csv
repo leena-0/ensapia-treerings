@@ -1,0 +1,10 @@
+kpi_id,name,unit,target,current_value,team
+K01,MAU,명,350000,320000,사업부
+K02,Stickiness_DAU_MAU,%,32.0,27.0,사업부
+K03,DAU,명,112000,86400,사업부
+K04,D7_Retention,%,12.0,9.5,사업부
+K05,Monthly_Churn_Rate,%,38.0,45.0,사업부
+K06,ARPU_Monthly,원,1500,1200,사업부
+K07,Monthly_Revenue,원,525000000,384000000,사업부
+K08,K_Factor,배,0.2,0.15,사업부
+K09,LTV,원,4737,3067,사업부

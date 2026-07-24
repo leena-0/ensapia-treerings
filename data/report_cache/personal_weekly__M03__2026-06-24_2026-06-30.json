@@ -1,0 +1,32 @@
+{
+  "input_hash": "f65e5c43df55b4178ba61b322eb817120f9d9faae39db6c54480024cc65431f6",
+  "model": "gemini/gemini-flash-latest",
+  "used_fallback": false,
+  "generated_at": "2026-07-23T07:09:34.687960+00:00",
+  "content": {
+    "member_id": "M03",
+    "week_start": "2026-06-24",
+    "week_end": "2026-06-30",
+    "highlights": [
+      "튜토리얼 완료율 상승이 초기 리텐션 개선으로 이어지는 것을 확인하고 전체 적용 여부 검토 중"
+    ],
+    "goal_progress": [
+      {
+        "goal_id": "G05",
+        "title": "신규 유저 온보딩 개선 실험",
+        "kpi_causal_summary": "튜토리얼 단순화 및 완료율 상승을 통해 초기 리텐션을 개선함으로써 D7_Retention(현재 9.5% → 목표 12.0%) 및 DAU(현재 86400명 → 목표 112000명) 목표 달성을 추진함.",
+        "status": "초기 리텐션 개선 확인 후 전체 적용 검토 중이나, 일부 iOS 기기 크래시 리포트 발생하여 대응 중"
+      }
+    ],
+    "issues": [
+      "튜토리얼 단순화 버전에서 일부 iOS 기기 크래시 리포트 발생 및 앱개발팀 긴급 확인 요청"
+    ],
+    "next_week_priorities": [
+      "튜토리얼 단순화 버전 전체 적용 여부 검토 및 프로세스 진행"
+    ],
+    "one_on_one_agenda": [
+      "튜토리얼 단순화 버전의 전체 적용 여부 결정",
+      "일부 iOS 기기 크래시 발생에 따른 앱개발팀와의 긴급 협조 및 지원 논의"
+    ]
+  }
+}

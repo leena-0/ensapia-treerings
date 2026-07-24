@@ -1,0 +1,69 @@
+{
+  "input_hash": "d51dbae7d8ac10b08d7b388d78173c7a4b8c3605f57c0e0aeab02605962fbb84",
+  "model": "gemini/gemini-flash-latest",
+  "used_fallback": false,
+  "generated_at": "2026-07-24T04:20:21.979927+00:00",
+  "content": {
+    "member_id": "M01",
+    "week_start": "2026-07-14",
+    "week_end": "2026-07-20",
+    "highlights": [
+      {
+        "text": "Slack 봇 프로토타입 개발 착수 및 OAuth scope 설정, 워크스페이스 설치, 봇 채널 초대 진행",
+        "log_ids": [
+          "L0265"
+        ]
+      },
+      {
+        "text": "conversations.history를 통한 메시지 수집 및 Gemini API 연동으로 개인 주간 리포트 자동 생성 동작 확인",
+        "log_ids": [
+          "L0265"
+        ]
+      }
+    ],
+    "goal_progress": [
+      {
+        "goal_id": "G01",
+        "title": "리브리 아일랜드 핵심 성장지표(MAU/DAU) 확대",
+        "kpi_causal_summary": "MAU(현재 320000명 → 목표 350000명), DAU(현재 86400명 → 목표 112000명), Stickiness_DAU_MAU(현재 27.0% → 목표 32.0%) 지표 대조. 이번 주 작성된 관련 업무일지 내용 없음.",
+        "citations": [],
+        "progress": {
+          "worked_days": 11,
+          "stage": 2,
+          "total_stages": 8,
+          "last_date": "2026-07-20",
+          "freshness": "4일째 작업 없음"
+        }
+      },
+      {
+        "goal_id": "G02",
+        "title": "리텐션 개선을 통한 락인 강화",
+        "kpi_causal_summary": "D7_Retention(현재 9.5% → 목표 12.0%), Monthly_Churn_Rate(현재 45.0% → 목표 38.0%) 지표 대조. 이번 주 작성된 관련 업무일지 내용 없음.",
+        "citations": [],
+        "progress": {
+          "worked_days": 8,
+          "stage": 1,
+          "total_stages": 6,
+          "last_date": "2026-06-05",
+          "freshness": "49일째 작업 없음"
+        }
+      }
+    ],
+    "issues": [
+      {
+        "text": "chat.postMessage로 리포트를 DM 전송하는 기능 작업 중 im:write 권한 이슈 해결 중",
+        "log_ids": [
+          "L0265"
+        ]
+      }
+    ],
+    "one_on_one_agenda": [],
+    "next_week_priorities": [
+      {
+        "goal_id": "G02",
+        "title": "리텐션 개선을 통한 락인 강화",
+        "reminder": "이번 주 업무일지에 언급 없음 - 다음 주 확인 필요"
+      }
+    ]
+  }
+}

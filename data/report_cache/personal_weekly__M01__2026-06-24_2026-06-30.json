@@ -1,0 +1,29 @@
+{
+  "input_hash": "a7a3c674e3d4881f7ac7ecf88d4363ea54622679aa61fb130f183ae2aed94a67",
+  "model": "gemini-flash-latest",
+  "generated_at": "2026-07-23T06:58:31.569794+00:00",
+  "content": {
+    "member_id": "M01",
+    "week_start": "2026-06-24",
+    "week_end": "2026-06-30",
+    "highlights": [
+      "이번 주 기준 MAU 320,000명, 고착도(DAU/MAU) 27% 확인 및 채널 다각화 효과 측정 진행"
+    ],
+    "goal_progress": [
+      {
+        "goal_id": "G01",
+        "title": "리브리 아일랜드 핵심 성장지표(MAU/DAU) 확대",
+        "kpi_causal_summary": "MAU(현재 320000명 → 목표 350000명), DAU(현재 86400명 → 목표 112000명), 고착도 Stickiness_DAU_MAU(현재 27.0% → 목표 32.0%) 지표 확대를 목표로 하며, 채널 다각화 효과를 측정 중이다.",
+        "status": "MAU 320,000명 및 고착도 27% 확인, 목표 대비 채널 다각화 효과 측정 진행 중"
+      },
+      {
+        "goal_id": "G02",
+        "title": "리텐션 개선을 통한 락인 강화",
+        "kpi_causal_summary": "D7_Retention(현재 9.5% → 목표 12.0%) 상승 및 Monthly_Churn_Rate(현재 45.0% → 목표 38.0%) 감소를 통한 락인 강화를 목표로 한다.",
+        "status": "이번 주 업무일지 작성 내역 없음"
+      }
+    ],
+    "issues": [],
+    "next_week_priorities": []
+  }
+}

@@ -1,0 +1,77 @@
+[
+  {
+    "id": "W0001",
+    "candidate_log_id": "L0265",
+    "stuck_member_id": "M01",
+    "checked_at": "2026-07-24T01:50:33.110453+00:00",
+    "is_stuck": true,
+    "match_found": false,
+    "status": "no_match"
+  },
+  {
+    "id": "W0002",
+    "candidate_log_id": "L0238",
+    "stuck_member_id": "M03",
+    "checked_at": "2026-07-24T01:50:37.296252+00:00",
+    "is_stuck": true,
+    "match_found": true,
+    "status": "pending",
+    "helper_member_id": "M09",
+    "helper_log_id": "L0192",
+    "problem_summary": "튜토리얼 단순화 버전 적용 중 일부 iOS 기기에서 크래시 리포트가 발생하여 긴급 확인이 필요한 상황입니다.",
+    "reason": "윤하은(M09) 멤버가 구형 iOS 기기에서 발생한 크래시의 원인을 파악하고 메모리 캐싱 로직을 수정하여 해결한 경험이 있어 문제 해결에 도움을 줄 수 있습니다.",
+    "suggestion_ts": "1784857837.491219",
+    "channel_id": "C0BJH7F2FC4"
+  },
+  {
+    "id": "W0003",
+    "candidate_log_id": "L0242",
+    "stuck_member_id": "M03",
+    "checked_at": "2026-07-24T01:50:42.803784+00:00",
+    "is_stuck": true,
+    "match_found": true,
+    "status": "pending",
+    "helper_member_id": "M09",
+    "helper_log_id": "L0239",
+    "problem_summary": "튜토리얼 단순화 버전에서 일부 iOS 기기 크래시 리포트가 발생하여 앱개발팀에 긴급 확인을 요청한 상황입니다.",
+    "reason": "윤하은(M09) 멤버가 구형 iOS 기기에서 앱이 강제 종료되는 크래시 원인을 찾아 메모리 캐싱 로직 수정으로 문제를 해결한 이력이 있습니다.",
+    "suggestion_ts": "1784857842.968049",
+    "channel_id": "C0BJH7F2FC4"
+  },
+  {
+    "id": "W0004",
+    "candidate_log_id": "L0244",
+    "stuck_member_id": "M04",
+    "checked_at": "2026-07-24T01:50:51.059616+00:00",
+    "is_stuck": true,
+    "match_found": false,
+    "status": "no_match"
+  },
+  {
+    "id": "W0005",
+    "candidate_log_id": "L0239",
+    "stuck_member_id": "M09",
+    "checked_at": "2026-07-24T01:50:55.913177+00:00",
+    "is_stuck": false,
+    "match_found": false,
+    "status": "no_match"
+  },
+  {
+    "id": "W0006",
+    "candidate_log_id": "L0257",
+    "stuck_member_id": "M09",
+    "checked_at": "2026-07-24T01:51:00.266011+00:00",
+    "is_stuck": false,
+    "match_found": false,
+    "status": "no_match"
+  },
+  {
+    "id": "W0007",
+    "candidate_log_id": "L0261",
+    "stuck_member_id": "M15",
+    "checked_at": "2026-07-24T01:52:12.100590+00:00",
+    "is_stuck": true,
+    "match_found": false,
+    "status": "no_match"
+  }
+]

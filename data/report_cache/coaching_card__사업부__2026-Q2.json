@@ -1,0 +1,83 @@
+{
+  "input_hash": "067ed9e819c4a504933497977c622b71535504a78b6f54ddb7f871600685a75b",
+  "model": "gemini/gemini-flash-latest",
+  "used_fallback": false,
+  "generated_at": "2026-07-24T02:05:48.051444+00:00",
+  "content": {
+    "team": "사업부",
+    "period": "2026-Q2",
+    "cards": [
+      {
+        "card_id": "C1",
+        "category": "개별 이슈",
+        "member_ids": [
+          "M02"
+        ],
+        "goal_ids": [
+          "G03",
+          "G04"
+        ],
+        "summary": "한서준님이 결제 모듈 PG사의 정산 지연으로 인해 매출 집계에 오차가 발생하여 재무팀과의 확인 작업이 필요한 상태입니다.",
+        "evidence": [
+          {
+            "log_id": "L0211",
+            "date": "2026-06-12",
+            "member_id": "M02"
+          }
+        ]
+      },
+      {
+        "card_id": "C2",
+        "category": "개별 이슈",
+        "member_ids": [
+          "M03"
+        ],
+        "goal_ids": [
+          "G05"
+        ],
+        "summary": "김도윤님이 진행 중인 튜토리얼 단순화 실험 버전에서 일부 iOS 기기 크래시 리포트가 계속 발생하여 앱개발팀의 긴급 대응이 필요한 상황입니다.",
+        "evidence": [
+          {
+            "log_id": "L0186",
+            "date": "2026-06-03",
+            "member_id": "M03"
+          },
+          {
+            "log_id": "L0238",
+            "date": "2026-06-21",
+            "member_id": "M03"
+          },
+          {
+            "log_id": "L0242",
+            "date": "2026-06-24",
+            "member_id": "M03"
+          }
+        ]
+      },
+      {
+        "card_id": "C3",
+        "category": "개별 이슈",
+        "member_ids": [
+          "M04"
+        ],
+        "goal_ids": [
+          "G06"
+        ],
+        "summary": "이서연님이 바이럴 초대 기능 강화 시 다중 계정 어뷰징 우려를 확인하여 어뷰징 방지팀과의 안전장치 설계 협업을 추진하고 있습니다.",
+        "evidence": [
+          {
+            "log_id": "L0206",
+            "date": "2026-06-11",
+            "member_id": "M04"
+          },
+          {
+            "log_id": "L0244",
+            "date": "2026-06-25",
+            "member_id": "M04"
+          }
+        ]
+      }
+    ],
+    "qualitative_goals_checkin": []
+  }
+}
