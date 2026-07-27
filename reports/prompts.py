@@ -13,7 +13,7 @@ PROMPT_VERSION 을 캐시 input_hash 에 포함시켜야 한다: 원본 데이�
 아래 PROMPT_VERSION 을 올릴 것.
 """
 
-PROMPT_VERSION = "2026-07-24.2"  # 개인 주간 리포트: status(LLM 진척 판단) 제거, citations 추가, 평가어 금지
+PROMPT_VERSION = "2026-07-26.1"  # 코칭 카드: 구조 병목을 코드가 탐지(coaching_signals)하고 LLM은 서술만; 확신도별 문형
 
 SYSTEM_PREAMBLE = """당신은 엔서피아(ENSAPIA)의 인사 평가를 지원하는 어시스턴트입니다.
 엔서피아는 아바타/디지털 월드 서비스 기업으로 '리브리 아일랜드' 등을 운영합니다.
@@ -126,22 +126,20 @@ CARD_FEWSHOT = """## Few-shot 예시 (형식 참고용, 실제 데이터 아님)
 
 출력 예시:
 {
-  "cards": [
+  "structural_cards": [
     {
-      "card_id": "C1",
-      "category": "개별 이슈",
+      "signal_id": "S1",
+      "headline": "세 사람이 같은 리워드 구성안 승인을 9일째 기다리고 있습니다.",
+      "prescription": "이렇게 말해보세요: '리워드 구성안 승인이 병목입니다. 오늘 승인을 확정해 세 분의 후속 작업을 풀어주세요.'"
+    }
+  ],
+  "individual_cards": [
+    {
+      "card_id": "I1",
       "member_ids": ["M03"],
       "goal_ids": ["G05"],
-      "summary": "김도윤님이 튜토리얼 크래시 이슈로 온보딩 실험이 4일째 정체 중입니다. 앱개발팀과의 진행 상황을 1on1에서 확인해보세요.",
+      "summary": "김도윤님이 튜토리얼 크래시 이슈로 온보딩 실험 진행에 어려움을 언급했습니다. 앱개발팀과의 진행 상황을 1on1에서 확인해보세요.",
       "evidence": [{"log_id": "L0002", "date": "2026-04-01", "member_id": "M03"}]
-    },
-    {
-      "card_id": "C2",
-      "category": "구조 이슈",
-      "member_ids": ["M01", "M04"],
-      "goal_ids": ["G01", "G06"],
-      "summary": "정지원님과 이서연님 모두 예산/리소스 승인 지연을 겪고 있습니다. 개인 일정 문제가 아니라 승인 프로세스의 구조적 병목일 수 있어 팀 차원 논의를 제안합니다.",
-      "evidence": [{"log_id": "L0005", "date": "2026-04-02", "member_id": "M01"}, {"log_id": "L0031", "date": "2026-04-09", "member_id": "M04"}]
     }
   ]
 }
@@ -157,9 +155,24 @@ def _ranked_goal_block(row, rank):
             f"{row['member_id']} | {row['title']} | KPI 근거: {kpi_lines}")
 
 
-def build_coaching_cards_prompt(store, team, period, ranked_goals, qualitative_goals, member_logs):
+def _signal_block(store, signal):
+    """코드가 탐지한 구조 신호 1건을 프롬프트용 텍스트로 (근거 인용 포함)."""
+    names = ", ".join(f"{store.members_by_id[m]['name']}({m})" for m in signal["member_ids"])
+    ev = "\n".join(
+        f"    - log_id={e['log_id']} [{e['date']}] {store.members_by_id[e['member_id']]['name']}: {e['excerpt']}"
+        for e in signal["evidence"]
+    )
+    return (
+        f"- signal_id: {signal['signal_id']} | 유형: 의존 병목 | 확신도: {signal['confidence']}\n"
+        f"  영향 인원: {signal['impact_count']}명 ({names}) / 지속: {signal['duration_days']}일 / 공유 대상: {', '.join(signal['shared_terms'])}\n"
+        f"  근거 로그:\n{ev}"
+    )
+
+
+def build_coaching_cards_prompt(store, team, period, ranked_goals, qualitative_goals, member_logs, detected_signals):
     ranked_block = "\n".join(_ranked_goal_block(r, i + 1) for i, r in enumerate(ranked_goals)) or "(정량 목표 없음)"
     qual_block = "\n".join(f"- {q['goal_id']} | {q['member_id']} | {q['title']}" for q in qualitative_goals) or "(정성 목표 없음)"
+    signals_block = "\n".join(_signal_block(store, s) for s in detected_signals) or "(코드가 탐지한 구조 병목 없음)"
 
     logs_blocks = []
     for member_id, logs in member_logs.items():
@@ -177,38 +190,50 @@ def build_coaching_cards_prompt(store, team, period, ranked_goals, qualitative_g
 팀: {team}
 기간: {period}
 
-정량 목표 우선순위 랭킹 (참고용, 재계산 금지):
+### [A] 코드가 이미 탐지·검증한 구조 병목 신호 (재탐지·재점수 금지)
+아래 신호들은 시스템이 업무일지를 가로질러 읽어 "여러 사람이 같은 대상을 기다리는 의존 병목"으로
+이미 탐지했고, 영향 인원·지속 기간·근거 로그까지 검증을 마친 것입니다. 당신은 이 신호를 다시 찾거나
+점수를 매기지 말고, **각 신호를 리더가 읽을 문장으로 서술만** 하세요.
+{signals_block}
+
+### [B] 정량 목표 우선순위 랭킹 (개별 이슈 판단 참고용, 재계산 금지)
 {ranked_block}
 
-정성 목표 (우선순위 계산 대상 아님):
+### [C] 정성 목표 (우선순위 계산 대상 아님)
 {qual_block}
 
-멤버별 최근 업무일지 (여기서 이슈/병목을 찾으세요):
+### [D] 멤버별 최근 업무일지 (개별 이슈를 여기서 찾으세요)
 {logs_block}
 
 ## 출력 형식 (JSON 객체만 출력)
 {{
   "team": "{team}",
   "period": "{period}",
-  "cards": [
+  "structural_cards": [
     {{
-      "card_id": "C1",
-      "category": "개별 이슈 또는 구조 이슈",
-      "member_ids": ["관련 member_id 목록 (구조 이슈면 2명 이상)"],
+      "signal_id": "위 [A]의 signal_id 그대로",
+      "headline": "누가/무엇을 기다리는 구조 병목인지 한 문장",
+      "prescription": "확신도에 맞는 처방 (아래 규칙)"
+    }}
+  ],
+  "individual_cards": [
+    {{
+      "card_id": "I1",
+      "member_ids": ["관련 member_id"],
       "goal_ids": ["관련 goal_id, 없으면 빈 배열"],
-      "summary": "1~2문장. 누가/무엇이/왜 중요한지 자연스러운 문장으로. 리더가 바로 판단할 수 있게 구체적으로",
+      "summary": "1~2문장. 누가/무엇이/왜 중요한지 자연스럽게. 진행 상태를 '지연/정체'로 단정하지 말고 로그에 쓰인 사실만.",
       "evidence": [{{"log_id": "...", "date": "...", "member_id": "..."}}]
     }}
   ],
-  "qualitative_goals_checkin": [{{"goal_id": "...", "member_id": "...", "title": "...", "note": "정기 체크인 시 확인할 포인트"}}]
+  "qualitative_goals_checkin": [{{"goal_id": "...", "member_id": "...", "title": "...", "note": "정기 체크인 포인트"}}]
 }}
 
 작성 지침:
-- cards 는 최대 3~5개만 선별하세요 (영향 범위와 근거 강도 기준). 팀 전체에서 감지되는 신호를 전부 나열하면 리더가 다시 우선순위를 판단해야 하니, 그 판단을 대신 해주는 것이 이 기능의 핵심입니다.
-- "구조 이슈"는 반드시 2명 이상이 같은 종류의 병목(같은 팀/프로세스/승인 등)을 겪고 있다는 근거가 로그에 실제로 있을 때만 만드세요. 근거 없이 만들지 마세요.
-- evidence 의 log_id/date/member_id 는 위에 주어진 실제 값만 사용하세요 (지어내지 마세요). evidence 없는 카드는 만들지 마세요.
-- summary 에 goal_priority 같은 원시 점수를 그대로 나열하지 말고, 왜 중요한지 자연어로 녹여서 설명하세요.
-- qualitative_goals_checkin 은 "정성 목표" 목록을 그대로 반영하세요.
+- [A]의 모든 신호에 대해 structural_cards 를 하나씩 작성하세요 (signal_id 를 그대로 유지). 신호를 임의로 빼거나 새로 만들지 마세요.
+- **확신도별 문형** (개요 §5-4-2): 확신도 "높음"이면 바로 쓸 수 있는 **조언 문장**("이렇게 말해보세요: …"), "중간"이면 **질문 제안**("~인지 확인해보세요"). headline 은 사실 요약, prescription 은 이 규칙을 따르세요.
+- individual_cards 는 [D] 로그에서 발견한 **개별 1인의 이슈**만 담되, [A]의 병목과 중복되는 인물/사안은 넣지 마세요. 최대 3건. evidence 없는 카드는 만들지 마세요.
+- individual_cards 의 evidence log_id/date/member_id 는 [D]에 실제로 주어진 값만 쓰세요 (지어내면 시스템이 검증 단계에서 폐기합니다).
+- qualitative_goals_checkin 은 [C] 목록을 반영하세요.
 """
 
 

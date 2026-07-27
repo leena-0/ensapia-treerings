@@ -17,6 +17,7 @@ import sys
 from datetime import date, timedelta, datetime, timezone
 
 from . import cache_store, prompts
+from .coaching_signals import detect_signals
 from .data_access import DataStore
 from .llm_client import generate_json
 from .priority import rank_team_goals
@@ -150,20 +151,71 @@ def run_personal(store, member_ids, week_start, week_end, *, force, dry_run):
         )
 
 
-def _sort_cards_by_kpi_priority(content, ranked):
+def _assemble_coaching_cards(content, detected, ranked, store):
     """
-    카드 순서를 LLM이 정하게 두지 않고 코드가 확정한다: 카드가 언급한 goal_ids 중
-    goal_priority_score(파이썬이 계산한 값)가 가장 높은 것을 그 카드의 순위로 쓴다.
-    goal_ids 가 없거나 ranked_goals 에 없는 카드(정성 목표 등)는 맨 뒤로 보낸다.
+    최종 카드 목록을 '코드가 확정'한다 (개요 v10 §5-4, 프로젝트 공통 원칙).
+
+    - 구조 이슈(의존 병목)는 coaching_signals 가 탐지·점수·인용 검증까지 마친 것을 권위로 삼고,
+      LLM 산출물에서는 headline/prescription '서술'만 가져온다. 인원/근거/점수/확신도는 코드값 사용.
+    - 개별 이슈는 LLM 산출물을 쓰되 evidence log_id 실존을 코드가 검증하고(없으면 폐기),
+      병목에 이미 얽힌 인물과 중복되는 카드는 제외한다.
+    - 선별: 구조 이슈(점수 = 영향 인원 × 근거 강도 × 지속 기간 내림차순) 먼저, 이어서 개별 이슈
+      (KPI 우선순위 내림차순). 합쳐서 최대 5건 (§5-4-4 '개수 제한이 기능이다').
     """
+    valid_log_ids = {l["log_id"] for logs in store.logs_by_member.values() for l in logs}
     priority_by_goal = {r["goal_id"]: r["goal_priority_score"] for r in ranked}
 
-    def card_score(card):
+    # 1) 구조 이슈: 코드 신호(권위) + LLM 서술 결합
+    narr_by_id = {c.get("signal_id"): c for c in content.get("structural_cards", [])}
+    structural = []
+    for s in detected:
+        c = narr_by_id.get(s["signal_id"], {})
+        parts = [x.strip() for x in (c.get("headline"), c.get("prescription")) if x and x.strip()]
+        summary = " ".join(parts) or (
+            f"{s['impact_count']}명이 같은 대상('{', '.join(s['shared_terms'][:2])}')을 "
+            f"{s['duration_days']}일째 기다리는 의존 병목입니다. 리더가 승인을 밀어주면 해소됩니다."
+        )
+        structural.append({
+            "card_id": s["signal_id"],
+            "category": "구조 이슈",
+            "member_ids": s["member_ids"],
+            "goal_ids": [],
+            "summary": summary,
+            "evidence": [{"log_id": e["log_id"], "date": e["date"], "member_id": e["member_id"]}
+                         for e in s["evidence"] if e["log_id"] in valid_log_ids],
+            "confidence": s["confidence"],
+            "signal_type": s["type"],
+            "score": s["score"],
+        })
+    structural.sort(key=lambda c: c["score"], reverse=True)
+
+    # 2) 개별 이슈: LLM 산출 + evidence 실존 검증 + 병목 인물 중복 제외 + KPI 순 정렬
+    bottleneck_members = {m for s in detected for m in s["member_ids"]}
+    individual = []
+    for c in content.get("individual_cards", []):
+        ev = [e for e in c.get("evidence", []) if e.get("log_id") in valid_log_ids]
+        if not ev:
+            continue  # 근거 없는 카드는 만들지 않는다 (§5-4-4)
+        members = c.get("member_ids", [])
+        if members and set(members) <= bottleneck_members:
+            continue  # 이미 병목 카드로 다뤄진 인물만 담은 개별 카드는 중복이므로 제외
+        individual.append({
+            "card_id": c.get("card_id", ""),
+            "category": "개별 이슈",
+            "member_ids": members,
+            "goal_ids": c.get("goal_ids", []),
+            "summary": c.get("summary", ""),
+            "evidence": ev,
+        })
+
+    def kpi_score(card):
         scores = [priority_by_goal[g] for g in card.get("goal_ids") or [] if g in priority_by_goal]
         return max(scores) if scores else -1
+    individual.sort(key=kpi_score, reverse=True)
 
-    cards = content.get("cards", [])
-    content["cards"] = sorted(cards, key=card_score, reverse=True)
+    # 3) 구조 먼저 + 개별, 최대 5건
+    content["cards"] = (structural + individual)[:5]
+    content.setdefault("qualitative_goals_checkin", [])
     return content
 
 
@@ -173,12 +225,20 @@ def run_coaching(store, teams, period_label, *, force, dry_run):
         member_logs = {}
         for member_id in store.members_by_team[team]:
             logs = store.logs_by_member.get(member_id, [])
-            member_logs[member_id] = logs[-5:]  # 개별/구조 이슈 교차 탐지를 위해 최근 5건 원문 그대로 제공
+            member_logs[member_id] = logs[-5:]  # 개별 이슈 탐지를 위해 최근 5건 원문 그대로 제공
 
-        prompt = prompts.build_coaching_cards_prompt(store, team, period_label, ranked, qualitative, member_logs)
-        input_payload = {"ranked": ranked, "qualitative": qualitative, "logs": member_logs}
+        # 구조 병목은 LLM이 아니라 코드가 탐지·선별·인용 검증한다 (전체 로그를 가로질러 읽음)
+        detected = detect_signals(store, team)
+        for i, s in enumerate(detected, 1):
+            s["signal_id"] = f"S{i}"
+
+        prompt = prompts.build_coaching_cards_prompt(
+            store, team, period_label, ranked, qualitative, member_logs, detected)
+        input_payload = {"ranked": ranked, "qualitative": qualitative,
+                         "logs": member_logs, "signals": detected}
         _maybe_generate("coaching_card", team, period_label, prompt, input_payload, force=force, dry_run=dry_run,
-                         postprocess=lambda content, ranked=ranked: _sort_cards_by_kpi_priority(content, ranked))
+                         postprocess=lambda content, detected=detected, ranked=ranked:
+                             _assemble_coaching_cards(content, detected, ranked, store))
 
 
 def run_evidence(store, member_ids, *, force, dry_run):

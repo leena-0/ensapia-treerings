@@ -194,3 +194,91 @@ def build_coaching_blocks(team, cache_record):
             [f"{q.get('goal_id')} ({q.get('member_id')}) {q.get('title')} - {q.get('note')}" for q in qual]
         )))
     return blocks
+
+
+# ---------------------------------------------------------------------------
+# 신규 코칭 카드 파이프라인 (coaching/, 구현명세_코칭카드) 전용 블록.
+# 위 build_coaching_blocks 는 구 reports.generate_reports 캐시 스키마(category/summary)용이고,
+# 아래는 coaching.schemas.CoachingCard/UrgentAlert(headline/body/confidence/evidence) 전용이다.
+# ---------------------------------------------------------------------------
+_CONFIDENCE_BADGE = {"high": "🟢 확신도 높음", "medium": "🟡 확신도 중간"}
+_CARD_TYPE_LABEL = {
+    "dependency_bottleneck": "의존 병목",
+    "unresolved_request": "미해결 요청",
+    "rework_loop": "재작업 반복",
+    "load_imbalance": "부하 편중",
+    "unrecognized_work": "미인지 성과",
+}
+# 확신도별 카드 색상 (Slack Block Kit 자체는 카드마다 배경/테두리색을 못 주므로, 레거시
+# attachments 의 color 바를 빌려 카드마다 왼쪽에 색상 띠를 붙인다 — Slack에서 유일하게
+# 메시지 안 요소별로 색을 다르게 줄 수 있는 방법).
+_CONFIDENCE_COLOR = {"high": "#2ecc71", "medium": "#f39c12"}
+_URGENT_COLOR = "#e74c3c"
+
+
+def _ev_ref(e):
+    """실제 Slack permalink(https)면 클릭 가능한 링크로, 목데이터(log://...)면 이름만 표시."""
+    return f"<{e.permalink}|{e.user_name}>" if e.permalink.startswith("http") else e.user_name
+
+
+def _coaching_card_v2_block(card):
+    badge = _CONFIDENCE_BADGE.get(card.confidence, card.confidence)
+    label = _CARD_TYPE_LABEL.get(card.card_type, card.card_type)
+    ev_text = " · ".join(f"{_ev_ref(e)}({e.excerpt})" for e in card.evidence) or "근거 없음"
+
+    return [
+        _context(f"{badge}  |  {label}  |  영향 {card.affected_count}명 · {card.duration_days}일째"),
+        _section(f"*{card.headline}*\n{card.body}"),
+        {
+            "type": "actions",
+            "elements": [
+                {"type": "button", "text": {"type": "plain_text", "text": "채택"}, "style": "primary",
+                 "action_id": "coaching_card_adopt", "value": card.card_id},
+                {"type": "button", "text": {"type": "plain_text", "text": "기각"},
+                 "action_id": "coaching_card_dismiss", "value": card.card_id},
+            ],
+        },
+        _context(f"근거: {ev_text}"),
+    ]
+
+
+def build_coaching_cards_blocks(team, period_start, period_end, cards, narration="template"):
+    """격주 배치 코칭 카드 DM 본문 (coaching.graph.run_coaching 의 cards 결과).
+
+    반환: {"blocks": 상단 헤더/설명, "attachments": 카드마다 확신도색 바를 두른 블록 목록}.
+    Slack Block Kit 메시지는 항상 세로로만 쌓이므로(가로 배치 불가), 카드를 attachments 로
+    하나씩 분리해 색상 띠로 서로 다른 카드임을 시각적으로 구분한다.
+    호출부에서 chat_postMessage(blocks=결과["blocks"], attachments=결과["attachments"]) 로 넘긴다.
+    """
+    header_blocks = [
+        _header(f"🧭 {team} 팀 코칭 카드"),
+        _context(f"기간: {period_start} ~ {period_end}  |  서술: "
+                  f"{'실제 LLM(Gemini)' if narration == 'llm' else '코드 템플릿(오프라인)'}"),
+        _context("AI가 팀원들의 최근 업무일지를 분석해 제안했어요. 카드 왼쪽 색으로 확신도를 구분합니다"
+                  "(🟢 초록=높음, 🟠 주황=중간). 채택하거나 기각해보세요. "
+                  "(⚠️ 버튼 클릭은 아직 서버에 연결되지 않아 반응하지 않습니다 -- 인터랙티비티 엔드포인트 배포 후 연동 예정)"),
+    ]
+    if not cards:
+        return {"blocks": header_blocks + [_section("_이번 주기에 제안할 카드가 없습니다._")], "attachments": []}
+
+    attachments = [
+        {"color": _CONFIDENCE_COLOR.get(card.confidence, "#95a5a6"), "blocks": _coaching_card_v2_block(card)}
+        for card in cards
+    ]
+    return {"blocks": header_blocks, "attachments": attachments}
+
+
+def build_urgent_alert_blocks(team, alert):
+    """긴급 알림 DM 본문 — 격주 배치를 기다리지 않고 개별 메시지로 즉시 발송한다(명세 §7-5).
+    반환 형태는 build_coaching_cards_blocks 와 동일(blocks/attachments 분리)."""
+    ev_text = "\n".join(f"• {_ev_ref(e)}: {e.excerpt}" for e in alert.evidence) or "근거 없음"
+    card_blocks = [
+        _context(f"사유: {alert.reason}  |  탐지 시각: {alert.detected_at:%Y-%m-%d %H:%M}"),
+        _section(f"*{alert.headline}*"),
+        _section(f"근거:\n{ev_text}"),
+        _context(f"대상: {', '.join(alert.subjects)}"),
+    ]
+    return {
+        "blocks": [_header(f"🚨 {team} 팀 긴급 알림")],
+        "attachments": [{"color": _URGENT_COLOR, "blocks": card_blocks}],
+    }

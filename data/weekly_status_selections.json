@@ -1,0 +1,4 @@
+[
+  {"team": "사업부", "user_id": "M06", "subgoal_id": "sg_hold_01", "subgoal_title": "이탈 방지 캠페인 2차", "status": "on_hold", "week_of": "2026-06-15", "note": "의도적 보류 - 다음 분기로 미룸"},
+  {"team": "사업부", "user_id": "M03", "subgoal_id": "sg_block_01", "subgoal_title": "온보딩 실험 iOS 크래시", "status": "blocked", "week_of": "2026-06-15", "note": "앱개발팀 대응 대기"}
+]
