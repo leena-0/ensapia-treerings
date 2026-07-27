@@ -75,6 +75,16 @@ def build_evidence_pdf(member, content, output_path):
         for c in ge.get("citations", []):
             line(f"  - [{c.get('log_id', '')} / {c.get('date', '')}] {c.get('excerpt', '')}",
                  size=9, color=(90, 90, 90), height=5)
+        milestones = ge.get("milestones") or []
+        if milestones:
+            # 이모지(✅/🚧/⬜)는 fpdf2 + Noto Sans KR/AppleSDGothic 폰트에서 정상 렌더링 검증이 안 되어
+            # 텍스트 라벨([완료] 등)로 표기한다 (Slack 쪽은 클라이언트가 렌더링하므로 이모지 사용 가능).
+            line("마일스톤 (본인 보고 -- 리더 검토 필요, 자동 검증 아님):", size=10, bold=True, height=5)
+            for m in milestones:
+                reported = f" · 본인 보고 {m['self_reported_at'][:10]}" if m.get("self_reported_at") else ""
+                evidence = ", ".join(m.get("evidence_log_ids") or []) or "없음"
+                line(f"  [{m.get('status', '')}] {m.get('title', '')}{reported} · 근거: {evidence}",
+                     size=9, color=(90, 90, 90), height=5)
         pdf.ln(3)
 
     line("분기 성과 리뷰 초안", size=13, bold=True, height=8)

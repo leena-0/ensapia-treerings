@@ -116,6 +116,20 @@ def _postprocess_personal(content, store, goals, week_logs):
     for gp in content.get("goal_progress", []):
         gp["progress"] = stage_by_goal.get(gp.get("goal_id"))
 
+    # 정성 목표 마일스톤(본인 보고): LLM 서술은 못 믿으니 구조화된 상태/근거는 코드가 확정해 덮어씀
+    milestones_by_goal = {g["goal_id"]: store.goal_milestones(g["goal_id"]) for g in goals}
+    for gp in content.get("goal_progress", []):
+        milestones = milestones_by_goal.get(gp.get("goal_id"))
+        if milestones:
+            gp["milestones"] = [
+                {
+                    "milestone_id": m["milestone_id"], "title": m["title"], "status": m["status"],
+                    "self_reported_at": m["self_reported_at"], "reported_by": m["reported_by"],
+                    "evidence_log_ids": [e["log_id"] for e in ev],
+                }
+                for m, ev in milestones
+            ]
+
     # 다음 주 우선순위(대조): 이번 주 로그가 하나도 없었던 목표를 리마인드. LLM 추정이 아니라
     # "이번 주 언급 있었는지 없었는지"를 코드가 대조해서 만든 목록.
     mentioned_goal_ids = {log["linked_goal_id"] for log in week_logs}
@@ -137,7 +151,11 @@ def run_personal(store, member_ids, week_start, week_end, *, force, dry_run):
         input_payload = {
             "member": member,
             "goals": [
-                {"goal": g, "links": [{"weight": l["weight"], "direction": l["direction"], "kpi": k} for l, k in links]}
+                {
+                    "goal": g,
+                    "links": [{"weight": l["weight"], "direction": l["direction"], "kpi": k} for l, k in links],
+                    "milestones": [{"milestone": m, "evidence": ev} for m, ev in store.goal_milestones(g["goal_id"])],
+                }
                 for g, links in goals_with_links
             ],
             "week_logs": week_logs,
@@ -181,6 +199,31 @@ def run_coaching(store, teams, period_label, *, force, dry_run):
                          postprocess=lambda content, ranked=ranked: _sort_cards_by_kpi_priority(content, ranked))
 
 
+def _postprocess_evidence(content, store, goals_with_logs):
+    """
+    personal_weekly 의 _postprocess_personal 과 동일한 원칙: citation은 실제 log_id로 필터링하고,
+    마일스톤(본인 보고) 상태는 LLM 서술이 아니라 코드가 확정해 주입한다.
+    (evidence_package 는 기존에 postprocess가 전혀 없어 citation 필터링도 안 되고 있었던 기존 공백이었음
+    -- 이번에 마일스톤을 추가하는 김에 같이 메운다.)
+    """
+    valid_log_ids = {log["log_id"] for _, _, logs in goals_with_logs for log in logs}
+    milestones_by_goal = {g["goal_id"]: store.goal_milestones(g["goal_id"]) for g, _, _ in goals_with_logs}
+
+    for ge in content.get("goal_evidence", []):
+        ge["citations"] = [c for c in ge.get("citations", []) if c.get("log_id") in valid_log_ids]
+        milestones = milestones_by_goal.get(ge.get("goal_id"))
+        if milestones:
+            ge["milestones"] = [
+                {
+                    "milestone_id": m["milestone_id"], "title": m["title"], "status": m["status"],
+                    "self_reported_at": m["self_reported_at"], "reported_by": m["reported_by"],
+                    "evidence_log_ids": [e["log_id"] for e in ev],
+                }
+                for m, ev in milestones
+            ]
+    return content
+
+
 def run_evidence(store, member_ids, *, force, dry_run):
     for member_id in member_ids:
         member = store.members_by_id[member_id]
@@ -199,11 +242,16 @@ def run_evidence(store, member_ids, *, force, dry_run):
                     "goal": g,
                     "links": [{"weight": l["weight"], "direction": l["direction"], "kpi": k} for l, k in links],
                     "logs": logs,
+                    "milestones": [{"milestone": m, "evidence": ev} for m, ev in store.goal_milestones(g["goal_id"])],
                 }
                 for g, links, logs in goals_with_logs
             ],
         }
-        _maybe_generate("evidence_package", member_id, QUARTER, prompt, input_payload, force=force, dry_run=dry_run)
+        _maybe_generate(
+            "evidence_package", member_id, QUARTER, prompt, input_payload, force=force, dry_run=dry_run,
+            postprocess=lambda content, store=store, goals_with_logs=goals_with_logs:
+                _postprocess_evidence(content, store, goals_with_logs),
+        )
 
 
 def main():

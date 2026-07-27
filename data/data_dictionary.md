@@ -3,6 +3,15 @@
 생성 스크립트: `seed/generate_mock_data.py` (SEED=42 고정, 재실행해도 100% 동일한 CSV 생성 — `diff` 검증 완료)
 대상 분기: `2026-Q2` (2026-04-01 ~ 2026-06-30)
 
+**저장소 (2026-07-26 변경)**: 여러 리더가 조직 전체 평가 자료를 조회해야 한다는 요구사항 때문에 CSV 파일을
+`data/treerings.db` (SQLite) 로 이전했다 (`scripts/migrate_csv_to_sqlite.py`, 최초 1회 실행). 원본 CSV는
+`data/legacy_csv/`에 스냅샷으로 보존되며, 런타임 코드(`reports/data_access.py` 등)는 더 이상 이 CSV를
+읽지 않는다. `seed/generate_mock_data.py`는 그대로 CSV를 생성하는 스크립트로 남겨뒀다 — 이 스크립트의
+"SEED=42로 재실행하면 100% 동일 출력"이라는 순수성 계약을 유지하기 위해 SQLite 마이그레이션 로직과
+섞지 않았다. 목데이터를 처음부터 다시 만들고 싶으면 `generate_mock_data.py` → `migrate_csv_to_sqlite.py`
+순서로 실행하면 된다. **2026-07-27에 리포트 캐시(`report_cache`)도 같은 이유로 SQLite에 합류**했다 —
+자세한 배경은 9절 참고.
+
 ---
 
 ## 1. 테이블 개요
@@ -14,7 +23,10 @@
 | `kpis` | 팀 단위 KPI 스냅샷 (9건, 사업부팀만 보유) |
 | `goal_kpi_link` | goal ↔ kpi 다대다 연결 + 가중치/방향 (18건) |
 | `strategy_weights` | 분기 전략 우선순위 파라미터 (운영자 입력값, 9건) |
-| `slack_logs` | 업무일지 로그 (264건, 분기 전체 주차 커버) |
+| `slack_logs` | 업무일지 로그 (265건, 분기 전체 주차 커버 + 실제 ingest 로그 1건) |
+| `goal_milestones` | 정성 목표 마일스톤 — 본인 보고 (17절) |
+| `milestone_evidence` | 마일스톤 ↔ slack_logs 다대다 근거 연결 |
+| `report_cache` | 리포트 3종(개인 주간/코칭 카드/평가 근거 패키지) 생성 결과 캐시 (9절) |
 
 ---
 
@@ -177,19 +189,32 @@ goal이 여러 KPI에 걸쳐 있을 때, 각 KPI의 우선순위 점수를 그 g
 
 ## 9. report_cache — 리포트 캐시 저장소 (LLM 호출 절감)
 
-리포트 생성 로직(`reports/`)이 사용하는 캐시. `data/report_cache/*.json` 파일로 저장되며, 스키마는 다음과 같다.
+리포트 생성 로직(`reports/`)이 사용하는 캐시. **2026-07-27부터 `data/treerings.db`의 `report_cache`
+테이블**에 저장된다 (원래는 `data/report_cache/*.json` 파일이었으나, "팀 관리자가 전체 조직의
+평가 자료를 한눈에 볼 수 있는 DB"가 필요하다는 요구 때문에 이전함 — 원본 데이터(1~8절)만 SQLite에
+있고 리포트 결과물(내러티브)은 파일로 흩어져 있으면, 그 요구를 문자 그대로 만족하지 못한다고 판단.
+`scripts/migrate_report_cache_to_sqlite.py`로 이전, 원본 JSON은 `data/legacy_report_cache/`에
+스냅샷 보존). Slack 발송(`send_weekly_dm.py` 등)은 지금도 그대로 이 캐시를 읽어 DM/PDF로 보여주는
+방식이라 사용자 경험은 달라지지 않았고, 달라진 건 "그 내용을 SQL로도 조회할 수 있게 됐다"는 점뿐이다.
 
-| 필드 | 정의 |
+| 컬럼 | 정의 |
 |---|---|
-| (파일명) | `{report_type}__{scope_id}__{period}.json` (예: `personal_weekly__M03__2026-06-24_2026-06-30.json`) |
+| report_type, scope_id, period | 복합 PK. 예: `personal_weekly / M03 / 2026-06-24_2026-06-30`, `evidence_package / M07 / 2026-Q2`, `coaching_card / 사업부 / 2026-Q2` |
 | input_hash | 이 리포트를 만든 원본 데이터(멤버/목표/KPI/업무일지 등)의 sha256 해시 |
 | model | 실제 호출에 사용된 Gemini 모델 ID |
+| used_fallback | 로컬 LLM 폴백 사용 여부 (0/1) |
 | generated_at | 생성 시각(UTC ISO 8601) |
-| content | LLM이 반환한 JSON 리포트 본문 |
+| content | LLM이 반환한 JSON 리포트 본문 (TEXT 컬럼에 JSON 문자열 그대로 저장 — SQLite `json_extract()`로 필드별 조회 가능) |
 
 **캐시 판정 규칙**: 재생성 요청 시 동일한 입력으로 `input_hash`를 다시 계산해 저장된 값과 비교한다. 같으면 **API를 호출하지 않고** 캐시된 `content`를 그대로 반환한다(비용/rate limit 보호). 새 업무일지가 추가되거나 KPI 값이 바뀌는 등 입력이 변하면 해시가 달라져 자동으로 재생성된다. `--force` 옵션으로 캐시를 무시하고 강제 재생성할 수 있다.
 
-Slack 홈탭 서버(4-C)는 이 캐시 파일(또는 동일 스키마의 Firestore 문서)만 읽어서 렌더링하고, 실시간 생성은 명시적 트리거(버튼)를 눌렀을 때만 `reports/generate_reports.py` 로직을 호출한다.
+**조직 전체 조회 예시** (관리자가 SQL로 직접 훑어볼 때):
+```sql
+SELECT scope_id, json_extract(content, '$.quarter_review_draft') AS quarter_review
+FROM report_cache WHERE report_type = 'evidence_package';
+```
+
+Slack 홈탭 서버(4-C)는 이 캐시(SQLite `report_cache` 테이블)만 읽어서 렌더링하고, 실시간 생성은 명시적 트리거(버튼)를 눌렀을 때만 `reports/generate_reports.py` 로직을 호출한다.
 
 ---
 
@@ -292,3 +317,88 @@ freshness   = "오늘 작업함"          (마지막 로그 날짜 == 오늘)
 `slack_logs.csv`에 `channel_id`/`ts` 컬럼을 추가했다. 목데이터 264건은 실제 Slack 메시지가 아니므로 이 값이 비어 있고, `slack_app/ingest.py`로 실제 수집된 로그만 값이 채워진다(값이 없는 로그는 permalink를 만들지 않고 조용히 건너뜀 — 가짜 링크를 만들지 않음). 발송 시점(`send_weekly_dm.py`)에 인용된 log_id들을 모아 `chat.getPermalink`로 실제 링크를 조회해 `<url|log_id>` 형태로 렌더링한다. LLM 캐시에는 permalink를 저장하지 않고(Slack API 상태에 의존하는 값이라) 매 발송 시 새로 조회한다.
 
 **실측 검증**: 실제 로그 L0265는 `https://aiall-in-onedev.slack.com/archives/C0BJH7F2FC4/p1784525889298139` 링크가 정상 생성됐고, 목데이터 로그(L0001 등)는 링크 없이 건너뛰어짐을 확인.
+
+---
+
+## 17. goal_milestones — 정성 목표 마일스톤 (본인 보고, 리더 승인 없음)
+
+정성 목표(R&D·경영관리 팀, 11건)는 KPI가 없어서 정량 목표처럼 "갭 기반 우선순위"나 "실질 진척도"를
+보여줄 방법이 없었다. HR이 요청한 평가 근거 패키지에서 이 팀들의 "실질 진척도 및 임팩트"를 구조화해
+보여주기 위해, goal 하나당 하위 마일스톤 3개(가설수립/실행/결과측정)를 추적하는 테이블을 추가했다.
+
+| 컬럼 | 정의 |
+|---|---|
+| milestone_id | PK, `{goal_id}-MS{order_index}` (예: `G09-MS1`) |
+| goal_id | FK → goals (정성 목표에만 존재, 정량 목표는 마일스톤 없음) |
+| title | `가설수립` / `실행` / `결과측정` (아래 6절 GOAL_NARRATIVES 3단계와 동일 개념) |
+| order_index | 1~3 |
+| status | `미착수` / `진행중` / `완료` |
+| self_reported_at | 본인이 이 상태로 명시적으로 self-report 한 시각(ISO8601). **미착수/진행중 상태에서 아직 명시적 보고가 없었다면 NULL** (마일스톤 생성 시점에 활동 로그만 보고 자동으로 채워 넣지 않음 — self-report는 실제 보고 행위가 있어야만 값이 채워진다) |
+| reported_by | 항상 그 goal의 소유자 본인 (`slack_app/report_milestone.py` 가 코드 레벨로 강제) |
+
+`milestone_evidence` (goal_kpi_link와 동일한 다대다 패턴): `milestone_id` ↔ `slack_logs.log_id`. 완료
+보고에는 근거가 최소 1개 필수(코드가 쓰기 단계에서 강제). 진행중 상태에도 "현재까지의 활동 로그"를
+근거로 붙여두지만, 이는 self-report가 아니라 참고용 활동 신호일 뿐이다(그래서 `self_reported_at`은
+NULL로 남는다).
+
+### 17-1. 왜 리더 승인 없이 본인 보고만으로 확정하는가
+
+처음에는 "본인 자가보고 → 리더 승인"으로 설계했었으나, 재검토 결과 승인 절차를 빼기로 결정했다.
+이유: 이 리포트/근거 패키지는 어차피 **참고자료**이고, 리더가 이를 읽고 실제 평가를 **직접 다시 쓴다**.
+즉 리더가 근거 패키지를 읽는 순간 자체가 이미 검증 단계이며, 별도의 승인 클릭을 요구하는 것은
+리더에게 마일스톤 건건이 실시간으로 승인해야 하는 운영 부담만 추가할 뿐 검증 품질을 높이지 못한다.
+대신 모든 화면(홈 탭/주간 리포트/평가 근거 패키지 PDF)에서 마일스톤 상태를 항상 **"본인 보고"**라고
+투명하게 라벨링하고, 근거 로그(citation) 없이는 "완료"로 쓰기조차 못 하게 코드로 막았다 — 이는
+13절/14절에 이미 있는 "블랙박스 금지, 근거를 그대로 보여준다" 원칙을 정성 목표 영역까지 확장한 것뿐,
+새로운 철학이 아니다.
+
+**12-2절의 "구획 완료 확정"과 혼동하지 말 것**: 그건 `total_stages`/누적 업무일지 기반 구획 진행률(모든
+목표 공통, 아직 확정 버튼 미구현)이고, 이건 정성 목표 전용 마일스톤(본인 보고, 이미 CLI로 구현됨)이다.
+서로 다른 개념이며 향후 코드 수정 시 섞으면 안 된다.
+
+### 17-2. 목데이터 파생 규칙 (난수 아님)
+
+`scripts/migrate_csv_to_sqlite.py`가 `seed/generate_mock_data.py`의 `stage_for_week()`/`GOAL_NARRATIVES`를
+그대로 재사용해 파생 생성한다(11절의 "파생 값은 계산, 재현성" 원칙과 동일):
+
+1. 그 정성 목표의 `slack_logs`를 `stage_for_week()`로 가설수립/실행/결과측정 버킷에 재분류.
+2. `frontier` = 로그가 1건 이상 있는 가장 진행된 단계 번호(1~3).
+3. `frontier`보다 이전 단계 → `완료` (그 버킷의 마지막 로그 날짜를 `self_reported_at`으로, 그 버킷의
+   모든 log_id를 근거로 채움 — "이미 다음 단계로 넘어갔으니 이전 단계는 끝난 것"이라는 역산).
+4. `frontier` 단계 자체 → `진행중` (근거 로그는 붙이되 `self_reported_at`은 NULL — 마지막 단계를
+   자동으로 "완료"라고 단정하지 않는다. 그건 사람이 나중에 `report_milestone.py`로 실제 self-report할 몫).
+5. `frontier` 이후(로그 없는) 단계 → `미착수`.
+
+**검증 완료(2026-07-26)**: 현재 SEED=42 데이터로 11개 정성 목표 전부 3단계 버킷에 로그가 최소 1건씩
+있어 "이전 단계가 비어있는데 완료 처리되는" 엣지케이스는 실제로 발생하지 않았다. 만약 향후 재시드로
+이 케이스가 생기면(예: 이전 버킷은 비고 다음 버킷에만 로그가 있는 경우), 다음 단계 로그를 근거로
+"빌려와서" 완료 처리하지 않고 — 그 마일스톤 고유의 증거가 아니므로 — 마이그레이션 스크립트가 경고를
+출력하고 해당 마일스톤을 보수적으로 `미착수`로 남긴다.
+
+### 17-3. 실제 self-report (프로덕션 경로)
+
+Slack 인터랙티비티 엔드포인트가 아직 없어(12-2절/13절과 동일한 한계) 홈 탭 버튼 대신 CLI로 대체했다:
+
+```
+python3 -m slack_app.report_milestone --goal G09 --milestone 2 --status 완료 --cite L0123,L0130 --member M07
+```
+
+`goal["member_id"] != member`(본인 목표가 아님), `goal["type"] != "정성"`(정량 목표), `완료`인데 `--cite`가
+없음, cite한 log_id가 실존하지 않거나 본인/그 goal 소유가 아님 — 이 경우들은 전부 즉시 실패하고 조용히
+무시하지 않는다(사람이 잘못 입력한 것이므로, LLM 환각을 걸러낼 때와 달리 실패를 명확히 알려야 함).
+성공하면 그 마일스톤의 기존 근거를 지우고 새로 지정한 근거로 교체한다(누적이 아니라 매 보고가 완전한
+선언).
+
+### 17-4. 노출 위치
+
+- **홈 탭**(`slack_app/home_view.py`): 정성 목표는 ✅/🚧/⬜ 체크리스트로, 정량 목표는 기존 구획 한 줄
+  그대로. 가벼운 대시보드 용도라 근거 log_id는 생략.
+- **개인 주간 리포트**(`reports/prompts.py`/`generate_reports.py`): 정성 목표 블록에 마일스톤 상태+근거를
+  프롬프트에 포함하고(`_postprocess_personal`이 LLM 서술과 무관하게 `goal_progress[].milestones`를 코드로
+  덮어씀), `PROMPT_VERSION`에 포함되어 마일스톤이 바뀌면 캐시가 무효화된다.
+- **평가 근거 패키지**(PDF): `goal_evidence[].milestones`로 상태/근거 노출, PDF에는 이모지 대신
+  `[완료]`/`[진행중]`/`[미착수]` 텍스트 라벨 사용(로컬 macOS 폰트 폴백에서 이모지 렌더링을 검증하지
+  못해 보수적으로 텍스트 선택 — 15절의 폰트 이슈와 별개로, 이번 검증 중 로컬 AppleSDGothicNeo.ttc
+  폴백 폰트로 생성한 PDF의 시각 렌더링 자체가 깨지는 것을 발견함(텍스트 레이어/복사는 정상). 배포
+  환경의 Noto Sans KR 폰트로는 재현되는지 별도 확인 필요 — 마일스톤 기능과 무관한 기존 폰트 폴백의
+  한계이므로 이번 작업 범위에서는 텍스트 라벨 방식으로만 우회하고 폰트 자체는 고치지 않았다).
