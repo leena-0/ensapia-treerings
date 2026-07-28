@@ -17,10 +17,11 @@ import os
 from datetime import date
 
 from reports import cache_store
+from reports.collaboration import load_wish_pending, member_collaboration_summary
 from reports.data_access import DATA_DIR
 from reports.generate_reports import QUARTER_END, QUARTER_START
+from reports.progress import subgoal_stage
 
-WISH_PENDING_PATH = os.path.join(DATA_DIR, "wish_pending.json")
 CITY_IMAGE_CONFIG_PATH = os.path.join(DATA_DIR, "home_city_image.json")
 LEADER_ROLES = ("1차평가자", "2차평가자")
 
@@ -49,13 +50,6 @@ def _bullets(items, empty_text="(없음)"):
     return "\n".join(f"• {item}" for item in items)
 
 
-def _load_wish_pending():
-    if not os.path.exists(WISH_PENDING_PATH):
-        return []
-    with open(WISH_PENDING_PATH, encoding="utf-8") as f:
-        return json.load(f)
-
-
 def _load_city_image_file_id():
     if not os.path.exists(CITY_IMAGE_CONFIG_PATH):
         return None
@@ -63,12 +57,56 @@ def _load_city_image_file_id():
         return json.load(f).get("file_id")
 
 
-_SUBGOAL_DISPLAY = {
-    "확정완료": ("✅", lambda sg: "완공"),
-    "본인완료": ("🟡", lambda sg: "리더 확인 대기 중"),
-    "공사중": ("🏗", lambda sg: f"누적 {sg['cumulative_days']}일"),
-    "미착수": ("⬜", lambda sg: "_미착수_"),
+# 크레인 상태 임계값(영업일, PDF 기획서 6-2절): 작업중 0~2 / 멈춤 3~9 / 장기중단 10+
+CRANE_STOPPED_FROM = 3
+CRANE_WITHDRAWN_FROM = 10
+
+
+def _crane_state(business_days_since):
+    """작업 기록 없음 경과 영업일수를 기준으로 크레인 상태 3단계를 판정한다.
+    화면이 실제와 다르면 시스템 전체 신뢰도가 흔들린다는 원칙(6-2절/12절 리스크)에 따라,
+    며칠째 손대지 않은 항목을 계속 '작업 중'으로 보여주지 않는다."""
+    if business_days_since is None or business_days_since <= CRANE_STOPPED_FROM - 1:
+        return "🏗", "작업 중"
+    if business_days_since < CRANE_WITHDRAWN_FROM:
+        return "⏸", f"멈춤 · {business_days_since}영업일째 작업 없음"
+    return "🏚", f"장기 중단 · {business_days_since}영업일째 작업 없음 (크레인 철수)"
+
+
+# 본인이 주간 확인 요청에서 선택한 상태 -> 크레인 표시 오버라이드 (PDF 기획서 6-2절 표 그대로).
+# 자동 판정(freshness)보다 본인 선택이 우선한다 -- 단, 이 오버라이드보다 더 최근 작업 로그가
+# 있으면(재개) 자동 판정이 다시 이긴다 (_subgoal_display 에서 날짜 비교로 처리).
+CHECKIN_OVERRIDE_DISPLAY = {
+    "진행중": ("🏗", "작업 중 (기록엔 안 남았지만 본인 확인)"),
+    "대기": ("⏸", "대기 중 (타인·외부 요인, 본인 표시)"),
+    "보류": ("🏚", "보류 (본인 의도적 중단)"),
+    "막힘": ("⏸", "막힘 (문제 있음, 리더 확인 필요)"),
 }
+
+
+def _subgoal_display(sg, p, store=None):
+    """
+    계량기(비율/최대치 추정)가 아니라 계수기 원칙: 여기서 보여주는 stage/worked_days는 전부
+    subgoal_stage()가 실제 로그를 세어 계산한 사실이고, "완료" 여부만 본인/리더가 명시적으로
+    확정한 상태(sg['status'])다. 5단계(25영업일)를 다 채워도 본인이 신고하기 전까지는 건물
+    높이가 5단계에서 멈춘 채 크레인만 계속 떠 있다(공사중 표시 유지) -- 자동으로 완공되지 않는다.
+    """
+    if sg["status"] == "확정완료":
+        return "✅", "완공"
+    if sg["status"] == "본인완료":
+        return "🟡", "리더 확인 대기 중"
+    if p["stage"] == 0:
+        return "⬜", "_미착수_"
+
+    checkin = store.latest_checkin(sg["sub_goal_id"]) if store else None
+    if checkin and (p["last_date"] is None or checkin["reported_at"][:10] >= p["last_date"]):
+        icon, state_text = CHECKIN_OVERRIDE_DISPLAY.get(checkin["status"]) or _crane_state(p["business_days_since"])
+    else:
+        icon, state_text = _crane_state(p["business_days_since"])
+
+    if p["stage"] >= p["total_stages"]:
+        return icon, f"{p['stage']}/{p['total_stages']}단계 (누적 {p['worked_days']}일) · {state_text} · 본인 완료 신고 대기"
+    return icon, f"{p['stage']}/{p['total_stages']}단계 (누적 {p['worked_days']}일) · {state_text}"
 
 
 def _subgoal_lines(goal, store):
@@ -78,24 +116,10 @@ def _subgoal_lines(goal, store):
         lines.append("    _등록된 하위 목표 없음_")
         return "\n".join(lines)
     for sg in sub_goals:
-        icon, text_fn = _SUBGOAL_DISPLAY.get(sg["status"], ("•", lambda sg: sg["status"]))
-        lines.append(f"    {icon} {sg['title']} — {text_fn(sg)}")
+        p = subgoal_stage(store, sg["sub_goal_id"])
+        icon, text = _subgoal_display(sg, p, store)
+        lines.append(f"    {icon} {sg['title']} — {text}")
     return "\n".join(lines)
-
-
-def _quarter_wishes(member_id, records):
-    """이번 분기(QUARTER_START~QUARTER_END) 안에서, member_id 가 관여한 confirmed 소원만 추린다."""
-    out = []
-    for r in records:
-        if r.get("status") != "confirmed":
-            continue
-        checked_at = r.get("checked_at", "")
-        checked_date = checked_at[:10]
-        if not (QUARTER_START.isoformat() <= checked_date <= QUARTER_END.isoformat()):
-            continue
-        if r.get("stuck_member_id") == member_id or r.get("helper_member_id") == member_id:
-            out.append(r)
-    return out
 
 
 def _pending_confirmations_for_leader(member, store):
@@ -141,7 +165,7 @@ def _notification_blocks(member, store):
                                "action_id": "subgoal_confirm_open"},
             })
 
-    pending_all = _load_wish_pending()
+    pending_all = load_wish_pending()
     my_pending = [r for r in pending_all if r.get("stuck_member_id") == member_id and r.get("status") == "pending"]
     received = [r for r in pending_all if r.get("helper_member_id") == member_id and r.get("status") == "confirmed"]
     blocks.append(_section(f"🌱 소원 — 내가 보낼 대기 {len(my_pending)}건 · 받은 요청 {len(received)}건"))
@@ -150,17 +174,15 @@ def _notification_blocks(member, store):
 
 
 def _contribution_line(member, store):
-    member_id = member["member_id"]
-    pending_all = _load_wish_pending()
-    quarter_records = _quarter_wishes(member_id, pending_all)
-
-    partners = set()
-    for r in quarter_records:
-        other = r["helper_member_id"] if r["stuck_member_id"] == member_id else r["stuck_member_id"]
-        partners.add(other)
-    seeds_received = sum(1 for r in quarter_records if r.get("helper_member_id") == member_id)
-
-    return _context(f"🌉 이번 분기 다리 {len(partners)} · 🌱 받은 씨앗 {seeds_received}")
+    """
+    도시 이미지 범례 기준: 역(🚉, 같은 팀 협업) / 항구(⚓, 다른 팀 협업) / 정원(🌱, 내가 도운 것 -
+    단방향). reports.collaboration.member_collaboration_summary()가 wish_match.py(confirmed)
+    기록에서 계산한 값을 그대로 쓴다 (평가 근거 패키지와 동일 로직 공유, 중복 방지).
+    """
+    summary = member_collaboration_summary(member["member_id"], store, QUARTER_START, QUARTER_END)
+    return _context(f"🚉 역 {summary['same_team_count']}(같은 팀 협업) · "
+                     f"⚓ 항구 {summary['other_team_count']}(다른 팀 협업) · "
+                     f"🌱 정원 {len(summary['helped'])}(내가 도운 것)")
 
 
 def build_goal_dashboard_blocks(member, store, quarter, display_name=None):
@@ -238,6 +260,35 @@ def _bullets_with_citations(items, permalinks=None, empty_text="(없음)"):
     return "\n".join(lines)
 
 
+_CHECKIN_STATUS_OPTIONS = ("진행중", "대기", "보류", "막힘")
+
+
+def _checkin_select_block(item, week_start, week_end):
+    """확인 요청(§5-1 "이 시스템의 관문"): 이번 주 언급 없던 하위 목표에 대해 본인이 직접
+    진행중/대기/보류/막힘 중 하나를 고른다. block_id 에 sub_goal_id/주차를 실어서
+    socket_app.py 의 액션 핸들러가 어떤 건물의 어느 주차 체크인인지 복원할 수 있게 한다."""
+    sub_goal_id = item["sub_goal_id"]
+    block_id = f"checkin|{sub_goal_id}|{week_start}|{week_end}"
+    options = [
+        {"text": {"type": "plain_text", "text": label}, "value": label}
+        for label in _CHECKIN_STATUS_OPTIONS
+    ]
+    element = {
+        "type": "static_select",
+        "action_id": "subgoal_checkin_select",
+        "placeholder": {"type": "plain_text", "text": "상태 선택"},
+        "options": options,
+    }
+    current = item.get("current_status")
+    if current in _CHECKIN_STATUS_OPTIONS:
+        element["initial_option"] = {"text": {"type": "plain_text", "text": current}, "value": current}
+
+    text = f"*{item['title']}* (`{sub_goal_id}`) — {item['reminder']}"
+    if current:
+        text += f"\n_현재 선택: {current} (다시 고르면 정정됩니다)_"
+    return {"type": "section", "block_id": block_id, "text": {"type": "mrkdwn", "text": text}, "accessory": element}
+
+
 def build_personal_blocks(member, cache_record, display_name=None, permalinks=None):
     display_name = display_name or member["name"]
     if cache_record is None:
@@ -285,18 +336,22 @@ def build_personal_blocks(member, cache_record, display_name=None, permalinks=No
         ))
 
     nwp = content.get("next_week_priorities", [])
-    nwp_text = "\n".join(f"• *{r['title']}* (`{r['goal_id']}`) — {r['reminder']}" for r in nwp) \
-        or "(이번 주 모든 목표가 언급됨)"
+    week_start = content.get("week_start", "?")
+    week_end = content.get("week_end", "?")
 
     blocks += [
         _divider(),
         _section("*🚧 이슈/도움 요청*\n" + _bullets_with_citations(
             content.get("issues", []), permalinks, "(이번 주 이슈 없음)")),
-        _context("다음 주 우선순위는 시스템이 계산합니다 (이번 주 언급 없었던 목표 리마인드) --------"),
-        _section("*➡️ 다음 주 우선순위 (리마인드)*\n" + nwp_text),
-        _section("*🗣️ 1on1 아젠다*\n" + _bullets_with_citations(
-            content.get("one_on_one_agenda", []), permalinks, "(이번 주 안건 없음)")),
+        _divider(),
+        _header("✅ 확인 요청"),
+        _context("이번 주 언급 없었던 하위 목표입니다. 실제 상태를 골라주세요 -- "
+                  "\"막힘\"으로 표시한 것만 리더 코칭 카드로 전달됩니다."),
     ]
+    if not nwp:
+        blocks.append(_section("_이번 주 모든 하위 목표가 언급됐습니다._"))
+    for item in nwp:
+        blocks.append(_checkin_select_block(item, week_start, week_end))
     return blocks
 
 

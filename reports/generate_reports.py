@@ -17,10 +17,11 @@ import sys
 from datetime import date, timedelta, datetime, timezone
 
 from . import cache_store, prompts
+from .collaboration import member_collaboration_summary
 from .data_access import DataStore
 from .llm_client import generate_json
 from .priority import rank_team_goals
-from .progress import goal_stage
+from .progress import goal_stage, subgoal_stage
 
 QUARTER = "2026-Q2"
 QUARTER_START = date(2026, 4, 1)
@@ -93,11 +94,45 @@ def _maybe_generate(report_type, scope_id, period, prompt, input_payload, *, for
     return content
 
 
-def _postprocess_personal(content, store, goals, week_logs):
+def _subgoal_next_week_priorities(store, goals, week_logs):
+    """
+    확인 요청(§5-1, "이 시스템의 관문") 대상 목록: 이번 주 로그가 하나도 안 걸린 하위목표(건물).
+    goal 단위가 아니라 sub_goal 단위인 이유 -- §5-1의 "목표별 상태"가 애초에 "하위목표별
+    완료/진행/미언급"으로 정의되어 있다. 아직 한 번도 손대지 않은(worked_days==0) 건물은
+    "정체"가 아니라 그냥 "미착수"이므로 확인 대상에서 제외한다 (§4-3 "진행 정체" 판정 원칙과
+    동일 -- 시작도 안 한 것에 막힘/보류를 묻는 건 무의미).
+    """
+    week_log_ids = {log["log_id"] for log in week_logs}
+    out = []
+    for g in goals:
+        for sg in store.sub_goals(g["goal_id"]):
+            if sg["status"] == "확정완료":
+                continue
+            evidence_ids = set(store.evidence_log_ids_by_subgoal.get(sg["sub_goal_id"], []))
+            if evidence_ids & week_log_ids:
+                continue  # 이번 주 언급됨
+            p = subgoal_stage(store, sg["sub_goal_id"])
+            if p["worked_days"] == 0:
+                continue  # 아직 미착수 -- 확인 대상 아님
+            existing = store.latest_checkin(sg["sub_goal_id"])
+            out.append({
+                "goal_id": g["goal_id"], "goal_title": g["title"],
+                "sub_goal_id": sg["sub_goal_id"], "title": sg["title"],
+                "reminder": "이번 주 업무일지에 언급 없음 - 상태를 선택해주세요",
+                "current_status": existing["status"] if existing else None,
+            })
+    return out
+
+
+def _postprocess_personal(content, store, goals, week_logs, week_start, week_end):
     """
     LLM의 역할을 '정리/대조/계수/추출'로 제한한다: 진척 상태·다음 주 우선순위처럼 사실을 세거나
     비교해서 나오는 값은 LLM이 판단하게 두지 않고 여기서 코드로 계산해 덮어쓴다.
     """
+    # week_start/week_end 는 확인 요청 select 블록의 block_id(주차 식별)에 그대로 쓰이므로,
+    # LLM이 프롬프트에 준 값을 그대로 안 돌려줬을 가능성에 대비해 코드가 확정값으로 덮어쓴다.
+    content["week_start"], content["week_end"] = week_start, week_end
+
     valid_log_ids = {log["log_id"] for log in week_logs}
 
     def _clean_citations(items, key="citations"):
@@ -106,8 +141,8 @@ def _postprocess_personal(content, store, goals, week_logs):
         return items
 
     _clean_citations(content.get("goal_progress", []))
-    # highlights/issues/one_on_one_agenda 는 log_ids(문자열 리스트)라 별도 검증
-    for key in ("highlights", "issues", "one_on_one_agenda"):
+    # highlights/issues 는 log_ids(문자열 리스트)라 별도 검증
+    for key in ("highlights", "issues"):
         for item in content.get(key, []):
             item["log_ids"] = [lid for lid in item.get("log_ids", []) if lid in valid_log_ids]
 
@@ -130,13 +165,10 @@ def _postprocess_personal(content, store, goals, week_logs):
                 for m, ev in milestones
             ]
 
-    # 다음 주 우선순위(대조): 이번 주 로그가 하나도 없었던 목표를 리마인드. LLM 추정이 아니라
-    # "이번 주 언급 있었는지 없었는지"를 코드가 대조해서 만든 목록.
-    mentioned_goal_ids = {log["linked_goal_id"] for log in week_logs}
-    content["next_week_priorities"] = [
-        {"goal_id": g["goal_id"], "title": g["title"], "reminder": "이번 주 업무일지에 언급 없음 - 다음 주 확인 필요"}
-        for g in goals if g["goal_id"] not in mentioned_goal_ids
-    ]
+    # 확인 요청 = 다음 주 우선순위(대조): 이번 주 로그가 없었던 하위목표(건물)를 리마인드하고,
+    # 본인이 Slack에서 진행중/대기/보류/막힘을 직접 고르게 한다(홈탭 크레인 표시 오버라이드 +
+    # 코칭 카드 게이트로 이어짐). LLM 추정이 아니라 코드가 대조해서 만든 목록.
+    content["next_week_priorities"] = _subgoal_next_week_priorities(store, goals, week_logs)
     return content
 
 
@@ -163,8 +195,9 @@ def run_personal(store, member_ids, week_start, week_end, *, force, dry_run):
         _maybe_generate(
             "personal_weekly", member_id, f"{week_start}_{week_end}", prompt, input_payload,
             force=force, dry_run=dry_run,
-            postprocess=lambda content, store=store, goals=goals, week_logs=week_logs:
-                _postprocess_personal(content, store, goals, week_logs),
+            postprocess=lambda content, store=store, goals=goals, week_logs=week_logs,
+                                week_start=week_start, week_end=week_end:
+                _postprocess_personal(content, store, goals, week_logs, week_start, week_end),
         )
 
 
@@ -186,12 +219,29 @@ def _sort_cards_by_kpi_priority(content, ranked):
 
 
 def run_coaching(store, teams, period_label, *, force, dry_run):
+    """
+    §5-1 원칙: "막힘"을 선택한 것만 코칭 카드로 전달된다 -- 확인 요청에서 아무도 막힘을 고르지
+    않은 팀원은 애초에 이 팀의 member_logs 후보에서 빠진다(로그를 통째로 넘겨 LLM이 알아서
+    병목을 찾게 하던 이전 방식은 이 게이트가 없었다). 막힘으로 표시된 건물에 실제로 연결된
+    로그가 아직 없으면(체크인만 하고 근거 로그가 안 쌓인 경우) 최근 로그로 보수적으로 대체한다.
+    """
     for team in teams:
         ranked, qualitative = rank_team_goals(team, QUARTER, store)
         member_logs = {}
         for member_id in store.members_by_team[team]:
-            logs = store.logs_by_member.get(member_id, [])
-            member_logs[member_id] = logs[-5:]  # 개별/구조 이슈 교차 탐지를 위해 최근 5건 원문 그대로 제공
+            blocked_subgoal_ids = store.member_blocked_subgoal_ids(member_id)
+            if not blocked_subgoal_ids:
+                continue  # 본인이 막힘으로 표시한 게 없으면 카드 후보에서 제외
+
+            blocked_log_ids = set()
+            for sg_id in blocked_subgoal_ids:
+                blocked_log_ids.update(store.evidence_log_ids_by_subgoal.get(sg_id, []))
+            logs = [store.logs_by_id[lid] for lid in blocked_log_ids if lid in store.logs_by_id]
+            member_logs[member_id] = logs or store.logs_by_member.get(member_id, [])[-5:]
+
+        if not member_logs:
+            print(f"[skip] {team}: 이번 기간 '막힘'으로 표시된 하위목표가 없어 코칭 카드 생성 대상 없음")
+            continue
 
         prompt = prompts.build_coaching_cards_prompt(store, team, period_label, ranked, qualitative, member_logs)
         input_payload = {"ranked": ranked, "qualitative": qualitative, "logs": member_logs}
@@ -199,12 +249,36 @@ def run_coaching(store, teams, period_label, *, force, dry_run):
                          postprocess=lambda content, ranked=ranked: _sort_cards_by_kpi_priority(content, ranked))
 
 
-def _postprocess_evidence(content, store, goals_with_logs):
+def _subgoal_summary_for_goal(store, goal_id):
+    """평가 근거 패키지의 "목표별 결과: 완료·미완 항목"(§5-4)용 사람이 읽을 상태 라벨.
+    확정완료/본인완료(sub_goals.status)는 그대로 쓰고, 나머지는 subgoal_stage()가 실제
+    로그 일수를 세어 계산한 값(진행중/미착수)으로 -- 여기서도 AI는 관여하지 않는다."""
+    summary = []
+    for sg in store.sub_goals(goal_id):
+        if sg["status"] == "확정완료":
+            label = "완료(확정)"
+        elif sg["status"] == "본인완료":
+            label = "완료(본인 보고, 리더 확인 대기)"
+        else:
+            p = subgoal_stage(store, sg["sub_goal_id"])
+            label = "진행중" if p["stage"] > 0 else "미착수"
+        p = subgoal_stage(store, sg["sub_goal_id"])
+        summary.append({
+            "sub_goal_id": sg["sub_goal_id"], "title": sg["title"], "status": label,
+            "worked_days": p["worked_days"], "confirmed_at": sg.get("confirmed_at"),
+        })
+    return summary
+
+
+def _postprocess_evidence(content, store, goals_with_logs, member_id, quarter_start, quarter_end):
     """
     personal_weekly 의 _postprocess_personal 과 동일한 원칙: citation은 실제 log_id로 필터링하고,
     마일스톤(본인 보고) 상태는 LLM 서술이 아니라 코드가 확정해 주입한다.
     (evidence_package 는 기존에 postprocess가 전혀 없어 citation 필터링도 안 되고 있었던 기존 공백이었음
     -- 이번에 마일스톤을 추가하는 김에 같이 메운다.)
+
+    §5-4 "목표별 결과(완료·미완 항목과 근거)"/"협업 기록"을 코드가 계산해 덮어쓴다 -- 둘 다 사실을
+    세거나 대조해서 나오는 값이라 LLM 서술에 맡기지 않는다는 프로젝트 공통 원칙과 같다.
     """
     valid_log_ids = {log["log_id"] for _, _, logs in goals_with_logs for log in logs}
     milestones_by_goal = {g["goal_id"]: store.goal_milestones(g["goal_id"]) for g, _, _ in goals_with_logs}
@@ -221,6 +295,11 @@ def _postprocess_evidence(content, store, goals_with_logs):
                 }
                 for m, ev in milestones
             ]
+        sub_goals = _subgoal_summary_for_goal(store, ge.get("goal_id"))
+        if sub_goals:
+            ge["sub_goals"] = sub_goals
+
+    content["collaboration"] = member_collaboration_summary(member_id, store, quarter_start, quarter_end)
     return content
 
 
@@ -249,8 +328,8 @@ def run_evidence(store, member_ids, *, force, dry_run):
         }
         _maybe_generate(
             "evidence_package", member_id, QUARTER, prompt, input_payload, force=force, dry_run=dry_run,
-            postprocess=lambda content, store=store, goals_with_logs=goals_with_logs:
-                _postprocess_evidence(content, store, goals_with_logs),
+            postprocess=lambda content, store=store, goals_with_logs=goals_with_logs, member_id=member_id:
+                _postprocess_evidence(content, store, goals_with_logs, member_id, QUARTER_START, QUARTER_END),
         )
 
 

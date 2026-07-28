@@ -290,6 +290,8 @@ freshness   = "오늘 작업함"          (마지막 로그 날짜 == 오늘)
 
 전체 흐름(매칭 성공 케이스 포함)을 시연하기 위해, G12(M09, 아바타 렌더링 품질 자동 검수 도구)의 `stage3` 내러티브에 "구형 iOS 기기 크래시를 메모리 캐싱 로직 수정으로 해결함"이라는 사례를 의도적으로 추가하고 시드를 재생성했다(`seed/generate_mock_data.py` 수정 → 재실행). 이 사례는 G05(M03, 신규 유저 온보딩 실험)의 기존 이슈("iOS 기기 크래시 리포트 발생")와 도메인이 겹치도록 설계한 것이다. 재스캔 결과 **2건의 매칭에 성공**했다(`M03의 이슈 -> M09가 해결한 사례`, `helper_log_id`가 실제 slack_logs.csv와 일치 확인됨) — 테스트 채널에 확인 메시지가 실제로 게시되었고, `data/wish_pending.json`에 `status="pending"`으로 대기 중이다. `--check-replies`로 실제 "네" 답장을 받아 helper에게 소원이 전송되는 마지막 단계는 사용자의 실제 답장이 있어야 검증 가능하다.
 
+**2026-07-28 프라이버시 수정**: 원래 요청자(막힌 사람)에게 보내는 제안 DM에 `helper_log["text"][:200]` 즉 helper의 원문을 200자까지 그대로 인용하고 있었다 — 이는 프로젝트 개요 §5-3/§11이 명시한 "요청자에게는 원문 발췌·permalink를 노출하지 않고 누가/언제/무슨 주제만 노출한다"는 원칙과 정면으로 배치되는 문제였다. `build_wish_match_prompt`(`reports/prompts.py`)의 출력 스키마에 `helper_topic`(2~5단어로 일반화된 주제, 원문 인용 금지)을 추가하고, DM 메시지를 `{helper_display}님({helper_team})이 {N}월경 {helper_topic} 관련 작업 기록이 있어요`로 교체해 원문 발췌를 완전히 제거했다. 정확한 날짜 대신 월 단위로만 노출한다.
+
 ---
 
 ## 15. 평가 근거 패키지 PDF (`reports/evidence_pdf.py`)
@@ -301,6 +303,12 @@ freshness   = "오늘 작업함"          (마지막 로그 날짜 == 오늘)
   1. `files:write` 스코프 없이는 `missing_scope` 오류 → Slack 앱 설정에서 스코프 추가 + 재설치로 해결.
   2. `files_upload_v2`는 `channel` 파라미터로 user_id를 받지 않고 실제 conversation(channel) id만 허용한다(`invalid_arguments`, 정규식 `^[CGDZ][A-Z0-9]{8,}$`) — `chat.postMessage`와 달리 DM을 자동으로 열어주지 않는다. `conversations.open(users=[slack_user_id])`으로 DM 채널 id(`D...`)를 먼저 받아와 그걸 `channel`에 넘기도록 수정해 해결. **실제 M01 대상 발송 성공(PDF 첨부 확인)**.
 
+**2026-07-28 §5-4 항목 확장**: 프로젝트 개요 5-4절이 요구하는 6개 출처 중 이전엔 "목표별 결과"(KPI/마일스톤 서술)와 "인용 색인"만 있었다. 이번에 두 개를 코드 계산으로 추가했다(둘 다 LLM 서술이 아니라 `generate_reports._postprocess_evidence`가 사실을 세거나 대조해서 주입 — 프로젝트 공통 원칙과 동일):
+- **목표별 결과의 완료·미완 항목**: `goal_evidence[].sub_goals`에 그 목표의 하위목표(건물)별 상태(`완료(확정)`/`완료(본인 보고, 리더 확인 대기)`/`진행중`/`미착수`)와 누적 작업일수를 추가(`_subgoal_summary_for_goal`). subgoal_stage()가 계산한 값 그대로라 AI는 관여하지 않는다.
+- **협업 기록**: `content.collaboration`에 그 분기 confirmed 소원 매칭 기준 같은 팀/다른 팀 협업 건수와 도운 것/도움받은 것 목록을 추가(`reports/collaboration.py`, 홈탭의 기여 요약 줄과 로직 공유). §5-3 프라이버시 원칙과 동일하게 원문/log_id는 담지 않고 관계·주제(`helper_topic`)·월 단위 시점만 담는다.
+
+나머지 3개 항목(목표 밖의 기여/병목 해소·의사결정 이력/중단 항목과 사유=박물관)은 이번 범위에서 제외했다 — 각각 "목표 밖 작업을 본인이 지정하는 UI", "코칭 카드 채택/기각 이력을 실제로 저장하는 백엔드"(현재 버튼은 인터랙티비티 미연결), "프로젝트 중단·이관(박물관) 개념 자체"가 스키마/기능으로 아직 존재하지 않아, 기계적 추가가 아니라 별도 설계가 필요한 새 서브시스템이기 때문이다.
+
 ---
 
 ## 16. 개인 주간 리포트 재설계 — "AI는 정리·대조·계수·추출만" 원칙 반영
@@ -310,8 +318,10 @@ freshness   = "오늘 작업함"          (마지막 로그 날짜 == 오늘)
 ### 16-1. LLM 역할 축소: 정리·대조·추출만, 판단 금지
 - `status` 필드 **완전히 삭제**. 대신 `reports/progress.py`의 `goal_stage()`(구획 대시보드와 동일 함수)가 계산한 `worked_days`/`stage`/`total_stages`/`freshness`를 `goal_progress` 각 항목에 **코드가 직접 주입**한다(`generate_reports.py`의 `_postprocess_personal`). LLM은 이 숫자에 관여하지 않는다.
 - `kpi_causal_summary`에 "성공적으로/순조롭게/지연되고 있다" 같은 평가어를 쓰지 말라고 프롬프트에 명시. 대신 로그 인용 + 주어진 KPI 숫자 대조까지만 서술하도록 few-shot 예시도 교체.
-- `highlights`/`issues`/`one_on_one_agenda`를 `{"text":..., "log_ids":[...]}` 형태로 바꿔 각 항목이 어떤 로그에 근거했는지 명시적으로 남기고, `goal_progress`에도 `citations`(log_id/date/excerpt)를 추가. `_postprocess_personal`이 이 log_id들이 실제로 그 주의 `week_logs`에 존재하는지 코드로 검증해, 존재하지 않는 log_id는 걸러낸다(인용 조작 방지).
+- `highlights`/`issues`를 `{"text":..., "log_ids":[...]}` 형태로 바꿔 각 항목이 어떤 로그에 근거했는지 명시적으로 남기고, `goal_progress`에도 `citations`(log_id/date/excerpt)를 추가. `_postprocess_personal`이 이 log_id들이 실제로 그 주의 `week_logs`에 존재하는지 코드로 검증해, 존재하지 않는 log_id는 걸러낸다(인용 조작 방지).
 - `next_week_priorities`는 더 이상 LLM이 만들지 않는다. **이번 주 로그가 한 번도 없었던 목표를 코드가 대조(diff)해서** 리마인드 목록으로 만든다 — "다음 주에 뭘 해야 할지 추정"이 아니라 "이번 주에 뭘 안 썼는지 대조"이므로 순수 계수/대조 작업이다.
+
+**2026-07-28 `one_on_one_agenda` 필드 제거 (`PROMPT_VERSION = "2026-07-28.1"`)**: 원래 "리더와의 1on1에서 논의/의사결정이 필요한 안건"을 LLM이 로그에서 골라내는 필드가 있었으나, 두 가지 이유로 제거했다. ① 개인 주간 리포트의 공식 산출물 정의(이번 주 한 일/목표별 상태/이슈·도움 요청/다음 주 우선순위/확인 요청)에 이 항목이 애초에 없다. ② "무엇이 1on1에서 논의가 필요한 안건인가"를 판단하는 것 자체가 "AI는 정리·대조·계수·추출만, 판단은 사람의 몫" 원칙(4-1/4-2절 — 특히 "의사결정 기록"은 AI가 하는 일이 아니라 본인이 기록하는 일로 명시됨)과 정면으로 충돌한다. `issues`와 기능적으로도 겹쳐 있었다.
 
 ### 16-2. 원문 링크(permalink)
 `slack_logs.csv`에 `channel_id`/`ts` 컬럼을 추가했다. 목데이터 264건은 실제 Slack 메시지가 아니므로 이 값이 비어 있고, `slack_app/ingest.py`로 실제 수집된 로그만 값이 채워진다(값이 없는 로그는 permalink를 만들지 않고 조용히 건너뜀 — 가짜 링크를 만들지 않음). 발송 시점(`send_weekly_dm.py`)에 인용된 log_id들을 모아 `chat.getPermalink`로 실제 링크를 조회해 `<url|log_id>` 형태로 렌더링한다. LLM 캐시에는 permalink를 저장하지 않고(Slack API 상태에 의존하는 값이라) 매 발송 시 새로 조회한다.
@@ -402,3 +412,40 @@ python3 -m slack_app.report_milestone --goal G09 --milestone 2 --status 완료 -
   폴백 폰트로 생성한 PDF의 시각 렌더링 자체가 깨지는 것을 발견함(텍스트 레이어/복사는 정상). 배포
   환경의 Noto Sans KR 폰트로는 재현되는지 별도 확인 필요 — 마일스톤 기능과 무관한 기존 폰트 폴백의
   한계이므로 이번 작업 범위에서는 텍스트 라벨 방식으로만 우회하고 폰트 자체는 고치지 않았다).
+
+---
+
+## 18. subgoal_weekly_checkin — 개인 주간 리포트 "확인 요청" (2026-07-28 추가)
+
+프로젝트 개요 5-1절이 "이 시스템의 관문"이라고 부르는 기능: 개인 주간 리포트에서 이번 주 로그가
+없었던 하위목표(건물)에 대해, 본인이 **진행중 / 대기 / 보류 / 막힘** 중 하나를 Slack 메시지의
+select 메뉴로 직접 골라 기록한다(`slack_app/home_view.py`의 `_checkin_select_block`,
+`slack_app/socket_app.py`의 `subgoal_checkin_select` 액션 핸들러).
+
+| 컬럼 | 정의 |
+|---|---|
+| sub_goal_id | FK → sub_goals |
+| week_start, week_end | 그 주차 (개인 주간 리포트의 period와 동일) |
+| member_id | 체크인한 본인 (FK → members) |
+| status | `진행중`/`대기`/`보류`/`막힘` |
+| reported_at | 선택 시각(ISO8601) |
+| PK | (sub_goal_id, week_start) — 같은 주에 다시 고르면 upsert (가역, 정정 가능) |
+
+`sub_goals.status`(본인완료/확정완료, 불가역 완료 판정)와는 완전히 다른 축이라 같은 컬럼에
+섞지 않았다. 두 군데에 연결된다:
+
+1. **홈 탭 크레인 표시 오버라이드** (`home_view._subgoal_display`): 6-2절 표 그대로 — 대기는
+   "멈춤"으로, 보류는 경과일수와 무관하게 즉시 "장기중단"으로, 막힘은 "멈춤+문제"로 표시를
+   덮어쓴다. 단, 체크인 이후 실제로 새 로그가 쌓이면(재개) 그 로그 날짜가 체크인 시각보다
+   최신이므로 자동으로 계산된 크레인 상태(진행중)가 다시 이긴다 — 오래된 체크인이 재개된 작업을
+   영원히 가리는 것을 막는다.
+2. **코칭 카드 게이트** (`generate_reports.run_coaching`): 예전에는 팀원 전원의 최근 로그
+   5건을 무조건 LLM에 넘겨 병목을 찾게 했으나, 이제 `store.member_blocked_subgoal_ids()`로
+   **본인이 "막힘"으로 표시한 하위목표가 있는 멤버만** 후보로 넘긴다. 아무도 막힘을 고르지
+   않은 팀은 코칭 카드 생성 자체를 건너뛴다.
+
+**알려진 한계**: 어떤 팀에 막힘 표시가 하나도 없어져(예: 이전엔 있었다가 이번 주 다 해소됨)
+`member_logs`가 비면 `run_coaching`이 `_maybe_generate` 호출 자체를 건너뛰므로, 그 이전에
+생성된 코칭 카드 캐시가 그대로 남아있게 된다(자동으로 "카드 없음"으로 갱신되지 않음). 지금
+데이터에는 체크인 이력이 아직 없어 실제로 발생하지 않는 케이스지만, 실사용 시 이 캐시 staleness를
+어떻게 처리할지(예: 매 실행마다 빈 카드로라도 명시적으로 갱신)는 추가 결정이 필요하다.

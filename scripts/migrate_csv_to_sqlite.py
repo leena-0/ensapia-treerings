@@ -121,25 +121,48 @@ CREATE TABLE report_cache (
 );
 
 -- 하위 목표(건물) -- 레몬베이스(외부 OKR 툴) 원본 하위 목표를 mock으로 대체. 정성 목표
--- 마일스톤(goal_milestones)과는 완전히 별개 개념(홈탭 "진행 중인 목표" 표시용).
--- scripts/seed_demo_subgoals.py 로 데모 goal 몇 개에만 채움 (전체 목표 대상 아님).
+-- 마일스톤(goal_milestones)과는 완전히 별개 개념(홈탭 "진행 중인 목표" 표시용). 계량기(비율/최대치
+-- 추정)가 아니라 계수기 원칙 -- status는 본인/리더의 명시적 확정 행위만 저장하고("본인완료"/
+-- "확정완료", NULL이면 미착수/공사중), 진행 단계는 subgoal_evidence로 연결된 실제 로그 일수를 세어
+-- reports/progress.py의 subgoal_stage()가 계산한다(모든 건물 고정 5단계 x 5영업일=25영업일).
+-- scripts/seed_demo_subgoals.py 로 19개 목표 전부에 채움.
 CREATE TABLE sub_goals (
     sub_goal_id       TEXT PRIMARY KEY,
     goal_id           TEXT NOT NULL REFERENCES goals(goal_id),
     title             TEXT NOT NULL,
     order_index       INTEGER NOT NULL,
-    status            TEXT NOT NULL CHECK (status IN ('미착수','공사중','본인완료','확정완료')) DEFAULT '미착수',
-    cumulative_days   INTEGER NOT NULL DEFAULT 0,
+    status            TEXT CHECK (status IN ('본인완료','확정완료')),
     self_reported_at  TEXT,
     confirmed_at      TEXT,
     confirmed_by      TEXT REFERENCES members(member_id),
     UNIQUE (goal_id, order_index)
 );
 
+CREATE TABLE subgoal_evidence (
+    sub_goal_id TEXT NOT NULL REFERENCES sub_goals(sub_goal_id),
+    log_id      TEXT NOT NULL REFERENCES slack_logs(log_id),
+    PRIMARY KEY (sub_goal_id, log_id)
+);
+CREATE INDEX idx_subgoal_evidence_log ON subgoal_evidence(log_id);
+
 CREATE TABLE home_view_state (
     member_id TEXT PRIMARY KEY REFERENCES members(member_id),
     last_seen_personal_weekly_generated_at TEXT
 );
+
+-- 개인 주간 리포트 "확인 요청"(scripts/add_subgoal_weekly_checkin_table.py 참고): 이번 주 언급
+-- 없던 하위 목표에 대해 본인이 진행중/대기/보류/막힘 중 하나를 직접 선택한 이력. sub_goals.status
+-- (완료 판정)와는 별개 축 -- 크레인 표시 오버라이드 + 코칭 카드 게이트(막힘만 전달)에 쓰인다.
+CREATE TABLE subgoal_weekly_checkin (
+    sub_goal_id TEXT NOT NULL REFERENCES sub_goals(sub_goal_id),
+    week_start  TEXT NOT NULL,
+    week_end    TEXT NOT NULL,
+    member_id   TEXT NOT NULL REFERENCES members(member_id),
+    status      TEXT NOT NULL CHECK (status IN ('진행중','대기','보류','막힘')),
+    reported_at TEXT NOT NULL,
+    PRIMARY KEY (sub_goal_id, week_start)
+);
+CREATE INDEX idx_checkin_member ON subgoal_weekly_checkin(member_id);
 """
 
 # stage_for_week()이 반환하는 내부 키(stage1/stage2/stage3)를 마일스톤 제목으로 매핑.

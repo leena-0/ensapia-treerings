@@ -13,7 +13,7 @@ PROMPT_VERSION 을 캐시 input_hash 에 포함시켜야 한다: 원본 데이�
 아래 PROMPT_VERSION 을 올릴 것.
 """
 
-PROMPT_VERSION = "2026-07-26.1"  # 정성 목표 마일스톤(본인 보고) 추가 -- 개인 주간 리포트/평가 근거 패키지 프롬프트에 반영
+PROMPT_VERSION = "2026-07-28.1"  # one_on_one_agenda 필드 제거 (스펙 미정의 + AI가 "의사결정 필요 안건"을 판단하는 것이 4-2절 원칙과 충돌해 삭제)
 
 SYSTEM_PREAMBLE = """당신은 엔서피아(ENSAPIA)의 인사 평가를 지원하는 어시스턴트입니다.
 엔서피아는 아바타/디지털 월드 서비스 기업으로 '리브리 아일랜드' 등을 운영합니다.
@@ -116,15 +116,14 @@ def build_personal_weekly_prompt(store, member, week_start, week_end, goals_with
       "citations": [{{"log_id": "...", "date": "...", "excerpt": "로그 원문에서 관련 부분 인용"}}]
     }}
   ],
-  "issues": [{{"text": "업무일지에 실제로 쓰인 이슈/도움 요청 문장", "log_ids": ["L0042"]}}],
-  "one_on_one_agenda": [{{"text": "리더와의 1on1에서 논의/의사결정이 필요한 안건 (리소스 요청, 의사결정 필요 이슈, 커리어/협업 관련 논의 등)", "log_ids": ["L0042"]}}]
+  "issues": [{{"text": "업무일지에 실제로 쓰인 이슈/도움 요청 문장", "log_ids": ["L0042"]}}]
 }}
-(issues/one_on_one_agenda 에 해당 사항이 없으면 각각 빈 배열 `[]`)
+(issues 에 해당 사항이 없으면 빈 배열 `[]`)
 
 작성 지침:
 - goal_progress 는 위 "목표 목록"의 모든 goal 을 빠짐없이 포함하세요 (이번 주 로그가 없는 goal 도 포함하되 citations 는 빈 배열).
 - citations 의 log_id/date 는 반드시 위 "이번 주 업무일지"에 실제로 주어진 값만 쓰세요 (지어내지 마세요).
-- highlights/issues/one_on_one_agenda 는 위 "이번 주 업무일지"에 실제로 언급된 내용에서만 도출하고, 각 항목에 근거 log_id를 포함하세요.
+- highlights/issues 는 위 "이번 주 업무일지"에 실제로 언급된 내용에서만 도출하고, 각 항목에 근거 log_id를 포함하세요.
 - "성공적으로", "순조롭게", "잘 진행 중", "지연되고 있다" 같은 진행 상태에 대한 평가/판단 표현은 쓰지 마세요. 로그 내용을 정리하고 주어진 KPI 숫자와 대조하는 것까지만 하세요.
 - 다음 주 우선순위는 이 리포트에 포함하지 마세요 (시스템이 별도로 계산해 붙입니다).
 """
@@ -253,12 +252,16 @@ def build_wish_match_prompt(stuck_member, candidate_log, other_issue_logs):
   "match_found": true 또는 false,
   "helper_member_id": "매칭된 멤버의 member_id, 없으면 빈 문자열",
   "helper_log_id": "매칭된 로그의 log_id (위 목록에 실제 존재하는 것만), 없으면 빈 문자열",
+  "helper_topic": "매칭된 로그가 다룬 주제를 2~5단어의 짧은 구로 일반화 (예: '모델 경량화', 'PG사 정산 연동'). 원문 문장을 그대로 인용하지 마세요. 없으면 빈 문자열",
   "reason": "왜 이 로그가 비슷한 문제를 해결한 사례라고 판단했는지, 없으면 빈 문자열"
 }}
 
 작성 지침:
 - is_stuck=false 이면 나머지 필드는 전부 빈 값으로 두세요.
 - helper_log_id 는 반드시 위 "다른 멤버들의 이슈 로그" 목록에 실제로 있는 log_id만 쓰세요.
+- helper_topic 은 요청자에게 그대로 노출되는 값입니다 -- 해결 방법의 상세나 원문 문장이 아니라
+  "무슨 주제였는지"만 짧게 일반화하세요 (예: 원문이 "메모리 캐싱 로직 수정으로 크래시 해결"이면
+  helper_topic 은 "크래시 이슈 해결" 정도로만 — 구체적 수정 방법을 담지 마세요).
 - 확신이 없으면 match_found=false 로 두세요 (억지로 매칭하지 마세요).
 """
 

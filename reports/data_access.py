@@ -9,6 +9,7 @@ data/legacy_csv/ 에 스냅샷으로 보존됨). DataStore가 노출하는 in-me
 import os
 import sqlite3
 from collections import defaultdict
+from datetime import datetime, timezone
 
 REPORTS_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(REPORTS_DIR)
@@ -46,7 +47,9 @@ class DataStore:
             self.goal_milestones_all = _read_table(conn, "goal_milestones")
             self.milestone_evidence_rows = _read_table(conn, "milestone_evidence")
             self.sub_goals_all = _read_table(conn, "sub_goals")
+            self.subgoal_evidence_rows = _read_table(conn, "subgoal_evidence")
             self.home_view_state_rows = _read_table(conn, "home_view_state")
+            self.subgoal_checkin_rows = _read_table(conn, "subgoal_weekly_checkin")
         finally:
             conn.close()
 
@@ -96,6 +99,16 @@ class DataStore:
 
         self.home_view_state_by_member = {row["member_id"]: row for row in self.home_view_state_rows}
 
+        self.evidence_log_ids_by_subgoal = defaultdict(list)
+        for row in self.subgoal_evidence_rows:
+            self.evidence_log_ids_by_subgoal[row["sub_goal_id"]].append(row["log_id"])
+
+        self.checkins_by_subgoal = defaultdict(list)
+        for row in self.subgoal_checkin_rows:
+            self.checkins_by_subgoal[row["sub_goal_id"]].append(row)
+        for sub_goal_id in self.checkins_by_subgoal:
+            self.checkins_by_subgoal[sub_goal_id].sort(key=lambda r: r["week_start"])
+
     def member_goals(self, member_id):
         return [self.goals_by_id[gid] for gid in self.goals_by_member.get(member_id, [])]
 
@@ -117,6 +130,11 @@ class DataStore:
         mock으로 대체한 것 -- goal_milestones(정성 목표 HR 평가용)와는 별개 개념."""
         return self.sub_goals_by_goal.get(goal_id, [])
 
+    def subgoal_logs(self, sub_goal_id):
+        """그 하위 목표(건물)에 실제로 연결된 slack_logs 목록 (subgoal_stage() 계산용)."""
+        return [self.logs_by_id[lid] for lid in self.evidence_log_ids_by_subgoal.get(sub_goal_id, [])
+                if lid in self.logs_by_id]
+
     def last_seen_personal_weekly(self, member_id):
         row = self.home_view_state_by_member.get(member_id)
         return row["last_seen_personal_weekly_generated_at"] if row else None
@@ -126,6 +144,45 @@ class DataStore:
             log for log in self.logs_by_member.get(member_id, [])
             if date_from <= log["date"] <= date_to
         ]
+
+    def latest_checkin(self, sub_goal_id, week_start=None):
+        """그 하위목표(건물)의 확인 요청 체크인 이력 중, week_start를 지정하면 그 주차 것만,
+        지정하지 않으면 가장 최근(week_start 기준) 것을 반환한다. 없으면 None."""
+        rows = self.checkins_by_subgoal.get(sub_goal_id, [])
+        if week_start is not None:
+            return next((r for r in rows if r["week_start"] == week_start), None)
+        return rows[-1] if rows else None
+
+    def member_blocked_subgoal_ids(self, member_id):
+        """본인이 가장 최근 체크인에서 '막힘'으로 표시한 하위목표 id 목록.
+        코칭 카드 생성(run_coaching)이 "본인이 막힘을 선택한 것만 전달"하도록 걸러내는 게이트로 쓴다."""
+        out = []
+        for goal in self.member_goals(member_id):
+            for sg in self.sub_goals(goal["goal_id"]):
+                latest = self.latest_checkin(sg["sub_goal_id"])
+                if latest and latest["status"] == "막힘":
+                    out.append(sg["sub_goal_id"])
+        return out
+
+
+def record_subgoal_checkin(sub_goal_id, week_start, week_end, member_id, status):
+    """확인 요청(§5-1)에서 본인이 고른 상태를 저장한다. 같은 주(week_start)에 다시 고르면
+    upsert -- 가역적 정정을 허용한다 (완료 신고/확정과 달리 이 상태는 되돌릴 수 있는 판단)."""
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO subgoal_weekly_checkin "
+                "(sub_goal_id, week_start, week_end, member_id, status, reported_at) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(sub_goal_id, week_start) DO UPDATE SET "
+                "status = excluded.status, reported_at = excluded.reported_at, "
+                "member_id = excluded.member_id, week_end = excluded.week_end",
+                (sub_goal_id, week_start, week_end, member_id, status,
+                 datetime.now(timezone.utc).isoformat()),
+            )
+    finally:
+        conn.close()
 
 
 def mark_report_seen(member_id, generated_at):

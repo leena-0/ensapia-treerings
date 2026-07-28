@@ -85,6 +85,31 @@ def build_evidence_pdf(member, content, output_path):
                 evidence = ", ".join(m.get("evidence_log_ids") or []) or "없음"
                 line(f"  [{m.get('status', '')}] {m.get('title', '')}{reported} · 근거: {evidence}",
                      size=9, color=(90, 90, 90), height=5)
+
+        sub_goals = ge.get("sub_goals") or []
+        if sub_goals:
+            # §5-4 "목표별 결과: 완료·미완 항목과 근거" -- subgoal_stage()가 실제 로그 일수를 세어
+            # 계산한 상태이지 LLM 서술이 아니다 (_subgoal_summary_for_goal, generate_reports.py).
+            line("하위 목표(건물) 현황:", size=10, bold=True, height=5)
+            for sg in sub_goals:
+                confirmed = f" · 확정 {sg['confirmed_at'][:10]}" if sg.get("confirmed_at") else ""
+                line(f"  [{sg['status']}] {sg['title']} (누적 {sg['worked_days']}일){confirmed}",
+                     size=9, color=(90, 90, 90), height=5)
+        pdf.ln(3)
+
+    collaboration = content.get("collaboration") or {}
+    if collaboration.get("helped") or collaboration.get("received"):
+        # §5-4 "협업 기록(함께 일한 관계/도운 것/도움받은 것)" -- wish_match.py(confirmed)에서
+        # 집계한 사실이며, 원문 발췌는 담지 않고 관계·주제·월 단위 시점만 노출한다(§5-3 원칙과 동일).
+        line("협업 기록", size=13, bold=True, height=8)
+        line(f"같은 팀 협업 {collaboration.get('same_team_count', 0)}건 · "
+             f"다른 팀 협업 {collaboration.get('other_team_count', 0)}건", size=10, color=(90, 90, 90))
+        for h in collaboration.get("helped", []):
+            line(f"  🌱 도운 것 -- {h['name']}({h['team']}) · {h['month']}경 · {h['topic']}",
+                 size=9, color=(90, 90, 90), height=5)
+        for r in collaboration.get("received", []):
+            line(f"  🙏 도움받은 것 -- {r['name']}({r['team']}) · {r['month']}경 · {r['topic']}",
+                 size=9, color=(90, 90, 90), height=5)
         pdf.ln(3)
 
     line("분기 성과 리뷰 초안", size=13, bold=True, height=8)
