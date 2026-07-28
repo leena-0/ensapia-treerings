@@ -3,6 +3,15 @@
 생성 스크립트: `seed/generate_mock_data.py` (SEED=42 고정, 재실행해도 100% 동일한 CSV 생성 — `diff` 검증 완료)
 대상 분기: `2026-Q2` (2026-04-01 ~ 2026-06-30)
 
+**저장소 (2026-07-26 변경)**: 여러 리더가 조직 전체 평가 자료를 조회해야 한다는 요구사항 때문에 CSV 파일을
+`data/treerings.db` (SQLite) 로 이전했다 (`scripts/migrate_csv_to_sqlite.py`, 최초 1회 실행). 원본 CSV는
+`data/legacy_csv/`에 스냅샷으로 보존되며, 런타임 코드(`reports/data_access.py` 등)는 더 이상 이 CSV를
+읽지 않는다. `seed/generate_mock_data.py`는 그대로 CSV를 생성하는 스크립트로 남겨뒀다 — 이 스크립트의
+"SEED=42로 재실행하면 100% 동일 출력"이라는 순수성 계약을 유지하기 위해 SQLite 마이그레이션 로직과
+섞지 않았다. 목데이터를 처음부터 다시 만들고 싶으면 `generate_mock_data.py` → `migrate_csv_to_sqlite.py`
+순서로 실행하면 된다. **2026-07-27에 리포트 캐시(`report_cache`)도 같은 이유로 SQLite에 합류**했다 —
+자세한 배경은 9절 참고.
+
 ---
 
 ## 1. 테이블 개요
@@ -14,7 +23,10 @@
 | `kpis` | 팀 단위 KPI 스냅샷 (9건, 사업부팀만 보유) |
 | `goal_kpi_link` | goal ↔ kpi 다대다 연결 + 가중치/방향 (18건) |
 | `strategy_weights` | 분기 전략 우선순위 파라미터 (운영자 입력값, 9건) |
-| `slack_logs` | 업무일지 로그 (272건 = 목데이터 264 + 심어둔 정답 7 + 실제 수집 1, 분기 전체 주차 커버) |
+| `slack_logs` | 업무일지 로그 (303건 = 목데이터 264 + 심어둔 정답 38(8-1/8-1-1절) + 실제 수집 1, 분기 전체 주차 커버) |
+| `goal_milestones` | 정성 목표 마일스톤 — 본인 보고 (17절) |
+| `milestone_evidence` | 마일스톤 ↔ slack_logs 다대다 근거 연결 |
+| `report_cache` | 리포트 3종(개인 주간/코칭 카드/평가 근거 패키지) 생성 결과 캐시 (9절) |
 
 ---
 
@@ -165,7 +177,7 @@ goal이 여러 KPI에 걸쳐 있을 때, 각 KPI의 우선순위 점수를 그 g
 
 | 컬럼 | 정의 |
 |---|---|
-| log_id | PK, 날짜순 정렬 후 재부여 (목데이터+심어둔정답 `L0001`~ / 실제 수집 로그는 그 뒤에 이어 붙어 마지막 id) |
+| log_id | PK. 목데이터(`L0001`~`L0264`) + 실제 수집 로그 1건(`L0265`) + 심어둔 정답 38건(`L0266`~`L0303`, 8-1/8-1-1절 -- `scripts/import_planted_coaching_logs.py`로 기존 DB에 사후 추가되어 실제 로그보다 큰 id를 받음, 8-2절 정정 참고) |
 | member_id | FK → members |
 | date | `2026-04-01`~`2026-06-30` (분기 전체, 주 1~2건) |
 | text | 업무일지 원문 |
@@ -208,25 +220,40 @@ goal이 여러 KPI에 걸쳐 있을 때, 각 KPI의 우선순위 점수를 그 g
 
 ### 8-2. 실제 수집 로그 보존
 
-`ingest.py`로 수집된 실제 Slack 로그(`channel_id`/`ts` 보유)는 시드 재생성 시에도 **보존**된다. 목데이터 뒤에 이어 붙고 id가 연속 부여되므로, 목데이터 건수가 바뀌면 실제 로그의 `log_id`도 함께 재부여된다(현재 1건, 항상 마지막 id). permalink는 `log_id`가 아니라 `channel_id`/`ts`로 조회하므로 id 변경은 기능에 영향이 없다.
+`ingest.py`로 수집된 실제 Slack 로그(`channel_id`/`ts` 보유)는 시드 재생성 시에도 **보존**된다. 목데이터 뒤에 이어 붙고 id가 연속 부여되므로, 목데이터 건수가 바뀌면 실제 로그의 `log_id`도 함께 재부여된다. permalink는 `log_id`가 아니라 `channel_id`/`ts`로 조회하므로 id 변경은 기능에 영향이 없다.
+
+**2026-07-28 정정**: "실제 로그는 항상 마지막 id"는 `generate_mock_data.py` → `migrate_csv_to_sqlite.py`를 처음부터 다시 실행하는 경로에서만 성립한다. main과의 merge로 심어둔 정답 로그(`PLANTED_LOGS`, 8-1절) 38건을 이미 살아있는 `treerings.db`에 `scripts/import_planted_coaching_logs.py`로 사후 추가했는데(전체 재시드는 이미 이 DB 위에 쌓인 sub_goals/subgoal_evidence/goal_milestones/report_cache 등의 실데이터를 깨뜨리므로 피함 — 아래 참고), 이 스크립트는 기존 log_id를 절대 재배정하지 않고 현재 최댓값 뒤에 새 id를 이어붙이는 방식이라, 결과적으로 심어둔 로그(L0266~L0303)가 실제 로그(L0265)보다 큰 id를 갖게 됐다. **그래서 "실제 로그 여부"는 이제 id 크기가 아니라 항상 `channel_id`/`ts` 컬럼이 비어있지 않은지로 판별해야 한다** — 코드는 원래부터 이 방식만 썼다(permalink 생성 로직 등).
 
 ---
 
 ## 9. report_cache — 리포트 캐시 저장소 (LLM 호출 절감)
 
-리포트 생성 로직(`reports/`)이 사용하는 캐시. `data/report_cache/*.json` 파일로 저장되며, 스키마는 다음과 같다.
+리포트 생성 로직(`reports/`)이 사용하는 캐시. **2026-07-27부터 `data/treerings.db`의 `report_cache`
+테이블**에 저장된다 (원래는 `data/report_cache/*.json` 파일이었으나, "팀 관리자가 전체 조직의
+평가 자료를 한눈에 볼 수 있는 DB"가 필요하다는 요구 때문에 이전함 — 원본 데이터(1~8절)만 SQLite에
+있고 리포트 결과물(내러티브)은 파일로 흩어져 있으면, 그 요구를 문자 그대로 만족하지 못한다고 판단.
+`scripts/migrate_report_cache_to_sqlite.py`로 이전, 원본 JSON은 `data/legacy_report_cache/`에
+스냅샷 보존). Slack 발송(`send_weekly_dm.py` 등)은 지금도 그대로 이 캐시를 읽어 DM/PDF로 보여주는
+방식이라 사용자 경험은 달라지지 않았고, 달라진 건 "그 내용을 SQL로도 조회할 수 있게 됐다"는 점뿐이다.
 
-| 필드 | 정의 |
+| 컬럼 | 정의 |
 |---|---|
-| (파일명) | `{report_type}__{scope_id}__{period}.json` (예: `personal_weekly__M03__2026-06-24_2026-06-30.json`) |
+| report_type, scope_id, period | 복합 PK. 예: `personal_weekly / M03 / 2026-06-24_2026-06-30`, `evidence_package / M07 / 2026-Q2`, `coaching_card / 사업부 / 2026-Q2` |
 | input_hash | 이 리포트를 만든 원본 데이터(멤버/목표/KPI/업무일지 등)의 sha256 해시 |
 | model | 실제 호출에 사용된 Gemini 모델 ID |
+| used_fallback | 로컬 LLM 폴백 사용 여부 (0/1) |
 | generated_at | 생성 시각(UTC ISO 8601) |
-| content | LLM이 반환한 JSON 리포트 본문 |
+| content | LLM이 반환한 JSON 리포트 본문 (TEXT 컬럼에 JSON 문자열 그대로 저장 — SQLite `json_extract()`로 필드별 조회 가능) |
 
 **캐시 판정 규칙**: 재생성 요청 시 동일한 입력으로 `input_hash`를 다시 계산해 저장된 값과 비교한다. 같으면 **API를 호출하지 않고** 캐시된 `content`를 그대로 반환한다(비용/rate limit 보호). 새 업무일지가 추가되거나 KPI 값이 바뀌는 등 입력이 변하면 해시가 달라져 자동으로 재생성된다. `--force` 옵션으로 캐시를 무시하고 강제 재생성할 수 있다.
 
-Slack 홈탭 서버(4-C)는 이 캐시 파일(또는 동일 스키마의 Firestore 문서)만 읽어서 렌더링하고, 실시간 생성은 명시적 트리거(버튼)를 눌렀을 때만 `reports/generate_reports.py` 로직을 호출한다.
+**조직 전체 조회 예시** (관리자가 SQL로 직접 훑어볼 때):
+```sql
+SELECT scope_id, json_extract(content, '$.quarter_review_draft') AS quarter_review
+FROM report_cache WHERE report_type = 'evidence_package';
+```
+
+Slack 홈탭 서버(4-C)는 이 캐시(SQLite `report_cache` 테이블)만 읽어서 렌더링하고, 실시간 생성은 명시적 트리거(버튼)를 눌렀을 때만 `reports/generate_reports.py` 로직을 호출한다.
 
 ---
 
@@ -302,6 +329,8 @@ freshness   = "오늘 작업함"          (마지막 로그 날짜 == 오늘)
 
 전체 흐름(매칭 성공 케이스 포함)을 시연하기 위해, G12(M09, 아바타 렌더링 품질 자동 검수 도구)의 `stage3` 내러티브에 "구형 iOS 기기 크래시를 메모리 캐싱 로직 수정으로 해결함"이라는 사례를 의도적으로 추가하고 시드를 재생성했다(`seed/generate_mock_data.py` 수정 → 재실행). 이 사례는 G05(M03, 신규 유저 온보딩 실험)의 기존 이슈("iOS 기기 크래시 리포트 발생")와 도메인이 겹치도록 설계한 것이다. 재스캔 결과 **2건의 매칭에 성공**했다(`M03의 이슈 -> M09가 해결한 사례`, `helper_log_id`가 실제 slack_logs.csv와 일치 확인됨) — 테스트 채널에 확인 메시지가 실제로 게시되었고, `data/wish_pending.json`에 `status="pending"`으로 대기 중이다. `--check-replies`로 실제 "네" 답장을 받아 helper에게 소원이 전송되는 마지막 단계는 사용자의 실제 답장이 있어야 검증 가능하다.
 
+**2026-07-28 프라이버시 수정**: 원래 요청자(막힌 사람)에게 보내는 제안 DM에 `helper_log["text"][:200]` 즉 helper의 원문을 200자까지 그대로 인용하고 있었다 — 이는 프로젝트 개요 §5-3/§11이 명시한 "요청자에게는 원문 발췌·permalink를 노출하지 않고 누가/언제/무슨 주제만 노출한다"는 원칙과 정면으로 배치되는 문제였다. `build_wish_match_prompt`(`reports/prompts.py`)의 출력 스키마에 `helper_topic`(2~5단어로 일반화된 주제, 원문 인용 금지)을 추가하고, DM 메시지를 `{helper_display}님({helper_team})이 {N}월경 {helper_topic} 관련 작업 기록이 있어요`로 교체해 원문 발췌를 완전히 제거했다. 정확한 날짜 대신 월 단위로만 노출한다.
+
 ---
 
 ## 15. 평가 근거 패키지 PDF (`reports/evidence_pdf.py`)
@@ -313,6 +342,12 @@ freshness   = "오늘 작업함"          (마지막 로그 날짜 == 오늘)
   1. `files:write` 스코프 없이는 `missing_scope` 오류 → Slack 앱 설정에서 스코프 추가 + 재설치로 해결.
   2. `files_upload_v2`는 `channel` 파라미터로 user_id를 받지 않고 실제 conversation(channel) id만 허용한다(`invalid_arguments`, 정규식 `^[CGDZ][A-Z0-9]{8,}$`) — `chat.postMessage`와 달리 DM을 자동으로 열어주지 않는다. `conversations.open(users=[slack_user_id])`으로 DM 채널 id(`D...`)를 먼저 받아와 그걸 `channel`에 넘기도록 수정해 해결. **실제 M01 대상 발송 성공(PDF 첨부 확인)**.
 
+**2026-07-28 §5-4 항목 확장**: 프로젝트 개요 5-4절이 요구하는 6개 출처 중 이전엔 "목표별 결과"(KPI/마일스톤 서술)와 "인용 색인"만 있었다. 이번에 두 개를 코드 계산으로 추가했다(둘 다 LLM 서술이 아니라 `generate_reports._postprocess_evidence`가 사실을 세거나 대조해서 주입 — 프로젝트 공통 원칙과 동일):
+- **목표별 결과의 완료·미완 항목**: `goal_evidence[].sub_goals`에 그 목표의 하위목표(건물)별 상태(`완료(확정)`/`완료(본인 보고, 리더 확인 대기)`/`진행중`/`미착수`)와 누적 작업일수를 추가(`_subgoal_summary_for_goal`). subgoal_stage()가 계산한 값 그대로라 AI는 관여하지 않는다.
+- **협업 기록**: `content.collaboration`에 그 분기 confirmed 소원 매칭 기준 같은 팀/다른 팀 협업 건수와 도운 것/도움받은 것 목록을 추가(`reports/collaboration.py`, 홈탭의 기여 요약 줄과 로직 공유). §5-3 프라이버시 원칙과 동일하게 원문/log_id는 담지 않고 관계·주제(`helper_topic`)·월 단위 시점만 담는다.
+
+나머지 3개 항목(목표 밖의 기여/병목 해소·의사결정 이력/중단 항목과 사유=박물관)은 이번 범위에서 제외했다 — 각각 "목표 밖 작업을 본인이 지정하는 UI", "코칭 카드 채택/기각 이력을 실제로 저장하는 백엔드"(현재 버튼은 인터랙티비티 미연결), "프로젝트 중단·이관(박물관) 개념 자체"가 스키마/기능으로 아직 존재하지 않아, 기계적 추가가 아니라 별도 설계가 필요한 새 서브시스템이기 때문이다.
+
 ---
 
 ## 16. 개인 주간 리포트 재설계 — "AI는 정리·대조·계수·추출만" 원칙 반영
@@ -322,10 +357,145 @@ freshness   = "오늘 작업함"          (마지막 로그 날짜 == 오늘)
 ### 16-1. LLM 역할 축소: 정리·대조·추출만, 판단 금지
 - `status` 필드 **완전히 삭제**. 대신 `reports/progress.py`의 `goal_stage()`(구획 대시보드와 동일 함수)가 계산한 `worked_days`/`stage`/`total_stages`/`freshness`를 `goal_progress` 각 항목에 **코드가 직접 주입**한다(`generate_reports.py`의 `_postprocess_personal`). LLM은 이 숫자에 관여하지 않는다.
 - `kpi_causal_summary`에 "성공적으로/순조롭게/지연되고 있다" 같은 평가어를 쓰지 말라고 프롬프트에 명시. 대신 로그 인용 + 주어진 KPI 숫자 대조까지만 서술하도록 few-shot 예시도 교체.
-- `highlights`/`issues`/`one_on_one_agenda`를 `{"text":..., "log_ids":[...]}` 형태로 바꿔 각 항목이 어떤 로그에 근거했는지 명시적으로 남기고, `goal_progress`에도 `citations`(log_id/date/excerpt)를 추가. `_postprocess_personal`이 이 log_id들이 실제로 그 주의 `week_logs`에 존재하는지 코드로 검증해, 존재하지 않는 log_id는 걸러낸다(인용 조작 방지).
+- `highlights`/`issues`를 `{"text":..., "log_ids":[...]}` 형태로 바꿔 각 항목이 어떤 로그에 근거했는지 명시적으로 남기고, `goal_progress`에도 `citations`(log_id/date/excerpt)를 추가. `_postprocess_personal`이 이 log_id들이 실제로 그 주의 `week_logs`에 존재하는지 코드로 검증해, 존재하지 않는 log_id는 걸러낸다(인용 조작 방지).
 - `next_week_priorities`는 더 이상 LLM이 만들지 않는다. **이번 주 로그가 한 번도 없었던 목표를 코드가 대조(diff)해서** 리마인드 목록으로 만든다 — "다음 주에 뭘 해야 할지 추정"이 아니라 "이번 주에 뭘 안 썼는지 대조"이므로 순수 계수/대조 작업이다.
+
+**2026-07-28 `one_on_one_agenda` 필드 제거 (`PROMPT_VERSION = "2026-07-28.1"`)**: 원래 "리더와의 1on1에서 논의/의사결정이 필요한 안건"을 LLM이 로그에서 골라내는 필드가 있었으나, 두 가지 이유로 제거했다. ① 개인 주간 리포트의 공식 산출물 정의(이번 주 한 일/목표별 상태/이슈·도움 요청/다음 주 우선순위/확인 요청)에 이 항목이 애초에 없다. ② "무엇이 1on1에서 논의가 필요한 안건인가"를 판단하는 것 자체가 "AI는 정리·대조·계수·추출만, 판단은 사람의 몫" 원칙(4-1/4-2절 — 특히 "의사결정 기록"은 AI가 하는 일이 아니라 본인이 기록하는 일로 명시됨)과 정면으로 충돌한다. `issues`와 기능적으로도 겹쳐 있었다.
 
 ### 16-2. 원문 링크(permalink)
 `slack_logs.csv`에 `channel_id`/`ts` 컬럼을 추가했다. 목데이터 264건은 실제 Slack 메시지가 아니므로 이 값이 비어 있고, `slack_app/ingest.py`로 실제 수집된 로그만 값이 채워진다(값이 없는 로그는 permalink를 만들지 않고 조용히 건너뜀 — 가짜 링크를 만들지 않음). 발송 시점(`send_weekly_dm.py`)에 인용된 log_id들을 모아 `chat.getPermalink`로 실제 링크를 조회해 `<url|log_id>` 형태로 렌더링한다. LLM 캐시에는 permalink를 저장하지 않고(Slack API 상태에 의존하는 값이라) 매 발송 시 새로 조회한다.
 
-**실측 검증**: 실제 수집 로그(`channel_id`/`ts` 보유, 시드 재생성 후에도 보존되며 항상 마지막 id — 현재 L0272)는 `https://aiall-in-onedev.slack.com/archives/C0BJH7F2FC4/p1784525889298139` 링크가 정상 생성됐고, 목데이터 로그(L0001 등)는 링크 없이 건너뛰어짐을 확인.
+**실측 검증**: 실제 수집 로그(`channel_id`/`ts` 보유, 현재 L0265 — 8절의 2026-07-28 정정 참고: 이 로그는 더 이상 최대 log_id가 아니다)는 `https://aiall-in-onedev.slack.com/archives/C0BJH7F2FC4/p1784525889298139` 링크가 정상 생성됐고, 목데이터 로그(L0001 등)는 링크 없이 건너뛰어짐을 확인.
+
+---
+
+## 17. goal_milestones — 정성 목표 마일스톤 (본인 보고, 리더 승인 없음)
+
+정성 목표(R&D·경영관리 팀, 11건)는 KPI가 없어서 정량 목표처럼 "갭 기반 우선순위"나 "실질 진척도"를
+보여줄 방법이 없었다. HR이 요청한 평가 근거 패키지에서 이 팀들의 "실질 진척도 및 임팩트"를 구조화해
+보여주기 위해, goal 하나당 하위 마일스톤 3개(가설수립/실행/결과측정)를 추적하는 테이블을 추가했다.
+
+| 컬럼 | 정의 |
+|---|---|
+| milestone_id | PK, `{goal_id}-MS{order_index}` (예: `G09-MS1`) |
+| goal_id | FK → goals (정성 목표에만 존재, 정량 목표는 마일스톤 없음) |
+| title | `가설수립` / `실행` / `결과측정` (아래 6절 GOAL_NARRATIVES 3단계와 동일 개념) |
+| order_index | 1~3 |
+| status | `미착수` / `진행중` / `완료` |
+| self_reported_at | 본인이 이 상태로 명시적으로 self-report 한 시각(ISO8601). **미착수/진행중 상태에서 아직 명시적 보고가 없었다면 NULL** (마일스톤 생성 시점에 활동 로그만 보고 자동으로 채워 넣지 않음 — self-report는 실제 보고 행위가 있어야만 값이 채워진다) |
+| reported_by | 항상 그 goal의 소유자 본인 (`slack_app/report_milestone.py` 가 코드 레벨로 강제) |
+
+`milestone_evidence` (goal_kpi_link와 동일한 다대다 패턴): `milestone_id` ↔ `slack_logs.log_id`. 완료
+보고에는 근거가 최소 1개 필수(코드가 쓰기 단계에서 강제). 진행중 상태에도 "현재까지의 활동 로그"를
+근거로 붙여두지만, 이는 self-report가 아니라 참고용 활동 신호일 뿐이다(그래서 `self_reported_at`은
+NULL로 남는다).
+
+### 17-1. 왜 리더 승인 없이 본인 보고만으로 확정하는가
+
+처음에는 "본인 자가보고 → 리더 승인"으로 설계했었으나, 재검토 결과 승인 절차를 빼기로 결정했다.
+이유: 이 리포트/근거 패키지는 어차피 **참고자료**이고, 리더가 이를 읽고 실제 평가를 **직접 다시 쓴다**.
+즉 리더가 근거 패키지를 읽는 순간 자체가 이미 검증 단계이며, 별도의 승인 클릭을 요구하는 것은
+리더에게 마일스톤 건건이 실시간으로 승인해야 하는 운영 부담만 추가할 뿐 검증 품질을 높이지 못한다.
+대신 모든 화면(홈 탭/주간 리포트/평가 근거 패키지 PDF)에서 마일스톤 상태를 항상 **"본인 보고"**라고
+투명하게 라벨링하고, 근거 로그(citation) 없이는 "완료"로 쓰기조차 못 하게 코드로 막았다 — 이는
+13절/14절에 이미 있는 "블랙박스 금지, 근거를 그대로 보여준다" 원칙을 정성 목표 영역까지 확장한 것뿐,
+새로운 철학이 아니다.
+
+**12-2절의 "구획 완료 확정"과 혼동하지 말 것**: 그건 `total_stages`/누적 업무일지 기반 구획 진행률(모든
+목표 공통, 아직 확정 버튼 미구현)이고, 이건 정성 목표 전용 마일스톤(본인 보고, 이미 CLI로 구현됨)이다.
+서로 다른 개념이며 향후 코드 수정 시 섞으면 안 된다.
+
+### 17-2. 목데이터 파생 규칙 (난수 아님)
+
+`scripts/migrate_csv_to_sqlite.py`가 `seed/generate_mock_data.py`의 `stage_for_week()`/`GOAL_NARRATIVES`를
+그대로 재사용해 파생 생성한다(11절의 "파생 값은 계산, 재현성" 원칙과 동일):
+
+1. 그 정성 목표의 `slack_logs`를 `stage_for_week()`로 가설수립/실행/결과측정 버킷에 재분류.
+2. `frontier` = 로그가 1건 이상 있는 가장 진행된 단계 번호(1~3).
+3. `frontier`보다 이전 단계 → `완료` (그 버킷의 마지막 로그 날짜를 `self_reported_at`으로, 그 버킷의
+   모든 log_id를 근거로 채움 — "이미 다음 단계로 넘어갔으니 이전 단계는 끝난 것"이라는 역산).
+4. `frontier` 단계 자체 → `진행중` (근거 로그는 붙이되 `self_reported_at`은 NULL — 마지막 단계를
+   자동으로 "완료"라고 단정하지 않는다. 그건 사람이 나중에 `report_milestone.py`로 실제 self-report할 몫).
+5. `frontier` 이후(로그 없는) 단계 → `미착수`.
+
+**검증 완료(2026-07-26)**: 현재 SEED=42 데이터로 11개 정성 목표 전부 3단계 버킷에 로그가 최소 1건씩
+있어 "이전 단계가 비어있는데 완료 처리되는" 엣지케이스는 실제로 발생하지 않았다. 만약 향후 재시드로
+이 케이스가 생기면(예: 이전 버킷은 비고 다음 버킷에만 로그가 있는 경우), 다음 단계 로그를 근거로
+"빌려와서" 완료 처리하지 않고 — 그 마일스톤 고유의 증거가 아니므로 — 마이그레이션 스크립트가 경고를
+출력하고 해당 마일스톤을 보수적으로 `미착수`로 남긴다.
+
+### 17-3. 실제 self-report (프로덕션 경로)
+
+Slack 인터랙티비티 엔드포인트가 아직 없어(12-2절/13절과 동일한 한계) 홈 탭 버튼 대신 CLI로 대체했다:
+
+```
+python3 -m slack_app.report_milestone --goal G09 --milestone 2 --status 완료 --cite L0123,L0130 --member M07
+```
+
+`goal["member_id"] != member`(본인 목표가 아님), `goal["type"] != "정성"`(정량 목표), `완료`인데 `--cite`가
+없음, cite한 log_id가 실존하지 않거나 본인/그 goal 소유가 아님 — 이 경우들은 전부 즉시 실패하고 조용히
+무시하지 않는다(사람이 잘못 입력한 것이므로, LLM 환각을 걸러낼 때와 달리 실패를 명확히 알려야 함).
+성공하면 그 마일스톤의 기존 근거를 지우고 새로 지정한 근거로 교체한다(누적이 아니라 매 보고가 완전한
+선언).
+
+### 17-4. 노출 위치
+
+- **홈 탭**(`slack_app/home_view.py`): 정성 목표는 ✅/🚧/⬜ 체크리스트로, 정량 목표는 기존 구획 한 줄
+  그대로. 가벼운 대시보드 용도라 근거 log_id는 생략.
+- **개인 주간 리포트**(`reports/prompts.py`/`generate_reports.py`): 정성 목표 블록에 마일스톤 상태+근거를
+  프롬프트에 포함하고(`_postprocess_personal`이 LLM 서술과 무관하게 `goal_progress[].milestones`를 코드로
+  덮어씀), `PROMPT_VERSION`에 포함되어 마일스톤이 바뀌면 캐시가 무효화된다.
+- **평가 근거 패키지**(PDF): `goal_evidence[].milestones`로 상태/근거 노출, PDF에는 이모지 대신
+  `[완료]`/`[진행중]`/`[미착수]` 텍스트 라벨 사용(로컬 macOS 폰트 폴백에서 이모지 렌더링을 검증하지
+  못해 보수적으로 텍스트 선택 — 15절의 폰트 이슈와 별개로, 이번 검증 중 로컬 AppleSDGothicNeo.ttc
+  폴백 폰트로 생성한 PDF의 시각 렌더링 자체가 깨지는 것을 발견함(텍스트 레이어/복사는 정상). 배포
+  환경의 Noto Sans KR 폰트로는 재현되는지 별도 확인 필요 — 마일스톤 기능과 무관한 기존 폰트 폴백의
+  한계이므로 이번 작업 범위에서는 텍스트 라벨 방식으로만 우회하고 폰트 자체는 고치지 않았다).
+
+---
+
+## 18. subgoal_weekly_checkin — 개인 주간 리포트 "확인 요청" (2026-07-28 추가)
+
+프로젝트 개요 5-1절이 "이 시스템의 관문"이라고 부르는 기능: 개인 주간 리포트에서 이번 주 로그가
+없었던 하위목표(건물)에 대해, 본인이 **진행중 / 대기 / 보류 / 막힘** 중 하나를 Slack 메시지의
+select 메뉴로 직접 골라 기록한다(`slack_app/home_view.py`의 `_checkin_select_block`,
+`slack_app/socket_app.py`의 `subgoal_checkin_select` 액션 핸들러).
+
+| 컬럼 | 정의 |
+|---|---|
+| sub_goal_id | FK → sub_goals |
+| week_start, week_end | 그 주차 (개인 주간 리포트의 period와 동일) |
+| member_id | 체크인한 본인 (FK → members) |
+| status | `진행중`/`대기`/`보류`/`막힘` |
+| reported_at | 선택 시각(ISO8601) |
+| PK | (sub_goal_id, week_start) — 같은 주에 다시 고르면 upsert (가역, 정정 가능) |
+
+`sub_goals.status`(본인완료/확정완료, 불가역 완료 판정)와는 완전히 다른 축이라 같은 컬럼에
+섞지 않았다. 두 군데에 연결된다:
+
+1. **홈 탭 크레인 표시 오버라이드** (`home_view._subgoal_display`): 6-2절 표 그대로 — 대기는
+   "멈춤"으로, 보류는 경과일수와 무관하게 즉시 "장기중단"으로, 막힘은 "멈춤+문제"로 표시를
+   덮어쓴다. 단, 체크인 이후 실제로 새 로그가 쌓이면(재개) 그 로그 날짜가 체크인 시각보다
+   최신이므로 자동으로 계산된 크레인 상태(진행중)가 다시 이긴다 — 오래된 체크인이 재개된 작업을
+   영원히 가리는 것을 막는다.
+2. **코칭 카드 게이트** (`generate_reports.run_coaching`): 예전에는 팀원 전원의 최근 로그
+   5건을 무조건 LLM에 넘겨 병목을 찾게 했으나, 이제 `store.member_blocked_subgoal_ids()`로
+   **본인이 "막힘"으로 표시한 하위목표가 있는 멤버만** 후보로 넘긴다. 아무도 막힘을 고르지
+   않은 팀은 코칭 카드 생성 자체를 건너뛴다.
+
+**알려진 한계**: 어떤 팀에 막힘 표시가 하나도 없어져(예: 이전엔 있었다가 이번 주 다 해소됨)
+`member_logs`가 비면 `run_coaching`이 `_maybe_generate` 호출 자체를 건너뛰므로, 그 이전에
+생성된 코칭 카드 캐시가 그대로 남아있게 된다(자동으로 "카드 없음"으로 갱신되지 않음). 지금
+데이터에는 체크인 이력이 아직 없어 실제로 발생하지 않는 케이스지만, 실사용 시 이 캐시 staleness를
+어떻게 처리할지(예: 매 실행마다 빈 카드로라도 명시적으로 갱신)는 추가 결정이 필요하다.
+
+**2026-07-28 merge 추가 -- main의 코칭 카드 엔진으로 교체**: 위 "코칭 카드 게이트"가 가리키던
+`generate_reports.run_coaching`의 단순 LLM 프롬프트 방식 코칭 카드는, `origin/main`에서 독립적으로
+개발된 훨씬 정교한 결정론적 탐지 엔진(`coaching/` LangGraph 파이프라인 + `reports/coaching_signals.py`
+5종 탐지기 -- 자세한 설명은 이 문서의 코칭 카드 관련 섹션 참고)으로 대체됐다. 이 섹션의
+`subgoal_weekly_checkin`(확인 요청 UI/DB)은 그대로 유지되며, 대신 `coaching/data_adapter.py`의
+`load_weekly_status()`가 기존의 정적 JSON 픽스처(`data/weekly_status_selections.json`, 실사용
+write 경로가 없었음) 대신 이 테이블의 실데이터를 읽도록 연결한다 -- 진행중/대기/보류/막힘 을 main
+스키마의 in_progress/waiting/on_hold/blocked 로 매핑(`reports/weekly_status_adapter.py` 신설,
+아래 참고). 위에서 언급된 "코칭 카드 캐시 staleness" 한계는 이 교체로 자연 해소된다 -- main의
+엔진은 매 실행 시 결정론적으로 재계산하고, 신호가 없으면 빈 결과를 명시적으로 반환한다.

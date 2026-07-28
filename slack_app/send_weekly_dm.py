@@ -35,8 +35,6 @@ def _collect_log_ids(content):
                 ids.add(c["log_id"])
     for item in content.get("issues", []):
         ids.update(item.get("log_ids", []))
-    for item in content.get("one_on_one_agenda", []):
-        ids.update(item.get("log_ids", []))
     return ids
 
 

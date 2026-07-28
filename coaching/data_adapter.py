@@ -13,6 +13,7 @@ import os
 from datetime import date, datetime, time
 
 from reports.data_access import DATA_DIR, DataStore
+from reports.weekly_status_adapter import subgoal_checkins_for_team
 
 from .schemas import TeamContext, WeeklyStatusSelection, WorkLog
 
@@ -56,11 +57,26 @@ def build_team_context(store: DataStore, team: str, period_start: date, period_e
                        period_start=period_start, period_end=period_end)
 
 
-def load_weekly_status(team: str, path: str | None = None) -> list[WeeklyStatusSelection]:
-    """주간 상태 선택 목 소스(옵션). data/weekly_status_selections.json 이 있으면 로드."""
+def load_weekly_status(team: str, path: str | None = None, store: DataStore | None = None) -> list[WeeklyStatusSelection]:
+    """
+    주간 상태 선택(§5-1 "확인 요청") 소스. 두 곳에서 모아 합친다:
+
+    1. 실데이터 -- `store`가 주어지면 `subgoal_weekly_checkin` 테이블(Slack "확인 요청" select로
+       본인이 직접 진행중/대기/보류/막힘을 고른 실제 기록)을 변환해 포함한다
+       (`reports.weekly_status_adapter`, in_progress/waiting/on_hold/blocked 매핑).
+    2. 목 픽스처(옵션) -- `data/weekly_status_selections.json`이 있으면 그대로 로드(주로
+       selftest/시나리오 검증용 -- 실데이터의 subgoal_id와 겹치지 않는 값이라 안전하게 병존).
+
+    실데이터가 없던 시절(이 파일이 유일한 소스였을 때)엔 여기 없으면 그냥 빈 리스트였다 --
+    이제는 실데이터가 있으면 그것도 함께 반환하되, 픽스처 파일이 없어도 에러 내지 않는다.
+    """
+    out: list[WeeklyStatusSelection] = []
+    if store is not None:
+        out.extend(WeeklyStatusSelection(**r) for r in subgoal_checkins_for_team(store, team))
+
     path = path or os.path.join(DATA_DIR, "weekly_status_selections.json")
-    if not os.path.exists(path):
-        return []
-    with open(path, encoding="utf-8") as f:
-        rows = json.load(f)
-    return [WeeklyStatusSelection(**r) for r in rows if r.get("team") in (None, team)]
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            rows = json.load(f)
+        out.extend(WeeklyStatusSelection(**r) for r in rows if r.get("team") in (None, team))
+    return out

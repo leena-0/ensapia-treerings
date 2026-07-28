@@ -11,6 +11,11 @@
 원칙: AI는 "매칭이 그럴듯한가"만 판단하고, 그 log_id/member_id 가 실제 존재하는지는 코드가
 검증한다 (data_dictionary.md 의 "인용 검증은 AI를 쓰지 않는다" 원칙과 동일).
 
+프라이버시 원칙(2026-07-28 수정): 요청자(막힌 사람)에게 보내는 제안 DM에는 helper의 원문
+발췌를 넣지 않는다. 대신 LLM이 만든 일반화된 주제(helper_topic, 2~5단어)와 팀, 월 단위
+시점만 노출한다 -- "누구에게 물어볼까"를 알려주는 것이 목적이지 상대가 정확히 뭘 썼는지
+보여주는 게 목적이 아니다(상세는 소원이 확정된 뒤 당사자에게 직접 묻는 구조).
+
 DM 기반이라 대화가 각자의 1:1 채널에만 남고, 다른 팀원(예: 매핑 안 된 동료)에게 노출되지 않는다.
 
 사용 예:
@@ -129,10 +134,16 @@ def scan(client, store):
 
                     stuck_display = display_name_for(member)
                     helper_display = display_name_for(store.members_by_id[helper_id])
+                    # 프라이버시 원칙(data_dictionary.md 5-3절/프로젝트 개요 §5-3): 요청자에게는
+                    # 메타데이터(누가/언제/무슨 주제)만 노출하고, 원문 발췌·permalink·해결 방법
+                    # 상세는 절대 노출하지 않는다. 시점도 정확한 날짜가 아니라 월 단위로 뭉갠다.
+                    helper_topic = (result.get("helper_topic") or "").strip() or "관련 업무"
+                    helper_team = store.members_by_id[helper_id]["team"]
+                    helper_month_label = f"{int(helper_log['date'][5:7])}월경"
                     msg = (
                         f"🌱 *소원 매칭 제안*\n"
-                        f"{stuck_display}님, {helper_display}님이 비슷한 문제를 해결하신 적 있어요.\n"
-                        f"> [{helper_log['date']}] {helper_log['text'][:200]}\n"
+                        f"{stuck_display}님, {helper_display}님({helper_team})이 {helper_month_label} "
+                        f"{helper_topic} 관련 작업 기록이 있어요.\n"
                         f"소원을 보낼까요? *'네'* 라고 답장해주세요."
                     )
                     dm_channel_id = _open_dm(client, stuck_slack_id)
@@ -142,6 +153,7 @@ def scan(client, store):
                         "status": "pending",
                         "helper_member_id": helper_id,
                         "helper_log_id": helper_log_id,
+                        "helper_topic": helper_topic,
                         "problem_summary": result.get("problem_summary", ""),
                         "reason": result.get("reason", ""),
                         "suggestion_ts": resp["ts"],

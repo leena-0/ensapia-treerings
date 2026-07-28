@@ -128,7 +128,7 @@ def run_coaching(team: str, period_start: date, period_end: date, *,
     state: CoachState = {
         "team_context": build_team_context(store, team, period_start, period_end),
         "work_logs": load_work_logs(store, team, period_start, period_end),
-        "weekly_status": weekly_status if weekly_status is not None else load_weekly_status(team),
+        "weekly_status": weekly_status if weekly_status is not None else load_weekly_status(team, store=store),
         "llm": narrator,
         "adoption_stats": adoption_stats or {},
     }

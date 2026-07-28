@@ -4,14 +4,20 @@ Slack 업무일지 수집 (polling 방식).
 
 실시간 Events API(Socket Mode 또는 공인 HTTPS 웹훅)는 App-Level Token 또는 배포된 서버가
 필요해 아직 준비되지 않았다. 대신 conversations.history 를 필요할 때(또는 주기적으로) 호출해
-새 메시지를 slack_logs.csv 에 추가하는 폴링 방식으로 동작한다. 필요한 봇 스코프
+새 메시지를 data/treerings.db 의 slack_logs 테이블에 추가하는 폴링 방식으로 동작한다. 필요한 봇 스코프
 (channels:history, channels:read, users:read)는 이미 보유하고 있어 추가 설정 없이 동작한다.
 
 goal 연결 규칙:
 - 메시지에 "#G05" 같은 태그가 있으면 해당 goal 에 연결 (그 멤버 소유 goal 인지 검증).
 - 태그가 없으면 그 멤버의 가장 최근 slack_log 의 linked_goal_id 를 재사용.
 - 그마저 없으면(첫 로그) 그 멤버의 첫 번째 goal 에 연결.
-- 어느 경우든 linked_goal_id 는 사후에 slack_logs.csv 에서 수동 수정 가능하다.
+- 어느 경우든 linked_goal_id 는 사후에 slack_logs 테이블에서 수동 수정 가능하다.
+
+하위 목표(건물) 연결 규칙 (선택):
+- 메시지에 "#G05-SG2" 같은 태그가 있으면, 그 goal 뿐 아니라 특정 하위 목표(건물)에도 이 로그를
+  근거로 연결한다(subgoal_evidence). 이게 있어야 reports/progress.py 의 subgoal_stage() 가 그
+  건물의 실제 작업 일수를 셀 수 있다 -- 태그 없이는 goal에만 연결되고 어느 건물 진행인지는 모른다.
+- 존재하지 않는 goal/하위목표 순번을 태그하면 조용히 무시한다(goal 연결 자체는 그대로 유지).
 
 사용 예:
   python3 -m slack_app.ingest --channel C0BJH7F2FC4 --dry-run
@@ -19,7 +25,6 @@ goal 연결 규칙:
 """
 
 import argparse
-import csv
 import json
 import os
 import re
@@ -27,14 +32,13 @@ import sys
 from datetime import datetime, timezone
 
 from env_loader import load_env
-from reports.data_access import DataStore, DATA_DIR
+from reports.data_access import DataStore, DATA_DIR, get_connection
 from slack_app.member_map import load_member_map
 
 STATE_PATH = os.path.join(DATA_DIR, "slack_ingest_state.json")
-SLACK_LOGS_PATH = os.path.join(DATA_DIR, "slack_logs.csv")
-LOG_FIELDNAMES = ["log_id", "member_id", "date", "text", "linked_goal_id", "channel_id", "ts"]
 
 GOAL_TAG_RE = re.compile(r"#(G\d+)", re.IGNORECASE)
+SUBGOAL_TAG_RE = re.compile(r"#(G\d+)-SG(\d+)", re.IGNORECASE)
 
 # 소원 매칭(wish_match.py)의 "네/아니오" 확인 답장을 업무일지로 잘못 수집하지 않도록 거르는 패턴.
 # 같은 채널을 폴링하기 때문에 이 짧은 확인 답장도 이 스크립트 눈에는 새 메시지로 보인다.
@@ -105,10 +109,23 @@ def ingest_channel(client, channel_id, *, dry_run=False):
         if _CONFIRM_REPLY_RE.match((msg.get("text") or "").strip()):
             skipped += 1
             continue  # 소원 매칭 확인 답장("네"/"아니오" 등) -- 업무일지가 아니므로 건너뜀
-        tag_ids = GOAL_TAG_RE.findall(msg.get("text", ""))
+        text_raw = msg.get("text", "")
+        tag_ids = GOAL_TAG_RE.findall(text_raw)
         goal_id = _pick_goal_id(member_id, tag_ids, store)
+
+        sub_goal_id = None
+        subgoal_match = SUBGOAL_TAG_RE.search(text_raw)
+        if subgoal_match:
+            tagged_goal, tagged_order = subgoal_match.group(1).upper(), subgoal_match.group(2)
+            if tagged_goal == goal_id:
+                candidate = f"{tagged_goal}-SG{tagged_order}"
+                if any(sg["sub_goal_id"] == candidate for sg in store.sub_goals(tagged_goal)):
+                    sub_goal_id = candidate
+                else:
+                    print(f"  [경고] 하위 목표 태그 {candidate!r} 를 찾을 수 없어 goal 연결만 유지합니다.")
+
         date_str = datetime.fromtimestamp(float(msg["ts"]), tz=timezone.utc).strftime("%Y-%m-%d")
-        text = GOAL_TAG_RE.sub("", msg.get("text", "")).strip()
+        text = GOAL_TAG_RE.sub("", SUBGOAL_TAG_RE.sub("", text_raw)).strip()
         new_rows.append({
             "log_id": None,
             "member_id": member_id,
@@ -117,6 +134,7 @@ def ingest_channel(client, channel_id, *, dry_run=False):
             "linked_goal_id": goal_id,
             "channel_id": channel_id,  # 실제 메시지라 원본 채널/타임스탬프를 남겨 permalink 생성에 쓴다
             "ts": msg["ts"],
+            "_sub_goal_id": sub_goal_id,  # DB 컬럼 아님, subgoal_evidence 삽입용 임시 필드
         })
 
     if not new_rows:
@@ -132,16 +150,31 @@ def ingest_channel(client, channel_id, *, dry_run=False):
 
     print(f"{len(new_rows)}건의 새 업무일지 발견 (건너뜀 {skipped}건):")
     for row in new_rows:
-        print(f"  {row['log_id']} {row['member_id']} [{row['date']}] -> {row['linked_goal_id']} : {row['text'][:50]}")
+        subgoal_note = f" ({row['_sub_goal_id']})" if row["_sub_goal_id"] else ""
+        print(f"  {row['log_id']} {row['member_id']} [{row['date']}] -> {row['linked_goal_id']}{subgoal_note} : {row['text'][:50]}")
 
     if dry_run:
-        print("(dry-run: slack_logs.csv 에 쓰지 않음)")
+        print("(dry-run: DB에 쓰지 않음)")
         return new_rows
 
-    with open(SLACK_LOGS_PATH, "a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=LOG_FIELDNAMES)
-        for row in new_rows:
-            writer.writerow(row)
+    conn = get_connection()
+    try:
+        with conn:
+            conn.executemany(
+                "INSERT INTO slack_logs (log_id, member_id, date, text, linked_goal_id, channel_id, ts) "
+                "VALUES (:log_id, :member_id, :date, :text, :linked_goal_id, :channel_id, :ts)",
+                new_rows,
+            )
+            subgoal_evidence_rows = [
+                (row["_sub_goal_id"], row["log_id"]) for row in new_rows if row["_sub_goal_id"]
+            ]
+            if subgoal_evidence_rows:
+                conn.executemany(
+                    "INSERT INTO subgoal_evidence (sub_goal_id, log_id) VALUES (?, ?)",
+                    subgoal_evidence_rows,
+                )
+    finally:
+        conn.close()
 
     state[channel_id] = max_ts_seen
     _save_json(STATE_PATH, state)
@@ -151,9 +184,9 @@ def ingest_channel(client, channel_id, *, dry_run=False):
 def main():
     from slack_sdk import WebClient
 
-    parser = argparse.ArgumentParser(description="Slack 채널 업무일지를 slack_logs.csv 로 수집 (폴링)")
+    parser = argparse.ArgumentParser(description="Slack 채널 업무일지를 slack_logs 테이블로 수집 (폴링)")
     parser.add_argument("--channel", help="채널 ID (미지정 시 SLACK_INGEST_CHANNEL_ID 환경변수)")
-    parser.add_argument("--dry-run", action="store_true", help="실제로 CSV에 쓰지 않고 결과만 출력")
+    parser.add_argument("--dry-run", action="store_true", help="실제로 DB에 쓰지 않고 결과만 출력")
     args = parser.parse_args()
 
     load_env()

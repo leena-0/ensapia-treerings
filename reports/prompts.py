@@ -13,7 +13,7 @@ PROMPT_VERSION 을 캐시 input_hash 에 포함시켜야 한다: 원본 데이�
 아래 PROMPT_VERSION 을 올릴 것.
 """
 
-PROMPT_VERSION = "2026-07-26.1"  # 코칭 카드: 구조 병목을 코드가 탐지(coaching_signals)하고 LLM은 서술만; 확신도별 문형
+PROMPT_VERSION = "2026-07-28.2"  # merge: one_on_one_agenda 필드 제거 + 코칭 카드 구조 병목 코드 탐지(coaching_signals)/확신도별 문형 반영
 
 SYSTEM_PREAMBLE = """당신은 엔서피아(ENSAPIA)의 인사 평가를 지원하는 어시스턴트입니다.
 엔서피아는 아바타/디지털 월드 서비스 기업으로 '리브리 아일랜드' 등을 운영합니다.
@@ -27,6 +27,8 @@ SYSTEM_PREAMBLE = """당신은 엔서피아(ENSAPIA)의 인사 평가를 지원�
 5. 당신의 역할은 "정리, 대조, 계수, 추출"로 제한됩니다. 진척률이나 진행 상태가 "좋다/나쁘다/지연됐다/잘 되고 있다"는
    식의 판단은 절대 하지 마세요 (그런 판단은 시스템이 실제 로그 개수를 세어 별도로 계산합니다). 로그에 실제로
    쓰인 내용을 인용/정리하고, 주어진 숫자를 대조해서 보여주는 것까지만 하세요.
+6. 정성 목표의 마일스톤 상태는 목표 소유자 본인이 직접 self-report 한 값이며 리더가 검증한 사실이 아닙니다.
+   이를 언급할 때는 반드시 "본인 보고"라고 명시하고, "검증됨"/"확정됨"처럼 쓰거나 그 달성 여부를 재판단하지 마세요.
 """
 
 PERSONAL_FEWSHOT = """## Few-shot 예시 (형식 참고용, 실제 데이터 아님)
@@ -54,7 +56,16 @@ PERSONAL_FEWSHOT = """## Few-shot 예시 (형식 참고용, 실제 데이터 아
 """
 
 
-def _goal_block(goal, links_with_kpi):
+def _milestone_lines(milestones_with_evidence):
+    lines = ["  마일스톤 (본인 보고, 검증 아님):"]
+    for m, evidence in milestones_with_evidence:
+        ev_ids = ", ".join(e["log_id"] for e in evidence) or "없음"
+        reported = f" (본인 보고 {m['self_reported_at'][:10]})" if m["self_reported_at"] else ""
+        lines.append(f"    - [{m['status']}] {m['title']}{reported} · 근거: {ev_ids}")
+    return lines
+
+
+def _goal_block(goal, links_with_kpi, milestones_with_evidence=None):
     lines = [f"- goal_id: {goal['goal_id']}", f"  title: {goal['title']}", f"  type: {goal['type']}"]
     if links_with_kpi:
         lines.append("  연결 KPI:")
@@ -65,11 +76,15 @@ def _goal_block(goal, links_with_kpi):
             )
     else:
         lines.append("  연결 KPI: 없음 (정성 목표)")
+        if milestones_with_evidence:
+            lines.extend(_milestone_lines(milestones_with_evidence))
     return "\n".join(lines)
 
 
 def build_personal_weekly_prompt(store, member, week_start, week_end, goals_with_links, week_logs):
-    goal_blocks = "\n".join(_goal_block(g, links) for g, links in goals_with_links)
+    goal_blocks = "\n".join(
+        _goal_block(g, links, store.goal_milestones(g["goal_id"])) for g, links in goals_with_links
+    )
     log_lines = "\n".join(
         f"  - log_id={log['log_id']} [{log['date']}] {log['text']}" for log in week_logs
     ) or "  (이번 주 업무일지 없음)"
@@ -97,19 +112,18 @@ def build_personal_weekly_prompt(store, member, week_start, week_end, goals_with
   "goal_progress": [
     {{
       "goal_id": "...", "title": "...",
-      "kpi_causal_summary": "정량 목표는 KPI 수치 대조 포함, 정성 목표는 로그 내용 정리. 판단/평가 문구 금지",
+      "kpi_causal_summary": "정량 목표는 KPI 수치 대조 포함, 정성 목표는 로그 내용 정리 + 마일스톤 상태(본인 보고)를 자연스럽게 언급. 판단/평가 문구 금지",
       "citations": [{{"log_id": "...", "date": "...", "excerpt": "로그 원문에서 관련 부분 인용"}}]
     }}
   ],
-  "issues": [{{"text": "업무일지에 실제로 쓰인 이슈/도움 요청 문장", "log_ids": ["L0042"]}}],
-  "one_on_one_agenda": [{{"text": "리더와의 1on1에서 논의/의사결정이 필요한 안건 (리소스 요청, 의사결정 필요 이슈, 커리어/협업 관련 논의 등)", "log_ids": ["L0042"]}}]
+  "issues": [{{"text": "업무일지에 실제로 쓰인 이슈/도움 요청 문장", "log_ids": ["L0042"]}}]
 }}
-(issues/one_on_one_agenda 에 해당 사항이 없으면 각각 빈 배열 `[]`)
+(issues 에 해당 사항이 없으면 빈 배열 `[]`)
 
 작성 지침:
 - goal_progress 는 위 "목표 목록"의 모든 goal 을 빠짐없이 포함하세요 (이번 주 로그가 없는 goal 도 포함하되 citations 는 빈 배열).
 - citations 의 log_id/date 는 반드시 위 "이번 주 업무일지"에 실제로 주어진 값만 쓰세요 (지어내지 마세요).
-- highlights/issues/one_on_one_agenda 는 위 "이번 주 업무일지"에 실제로 언급된 내용에서만 도출하고, 각 항목에 근거 log_id를 포함하세요.
+- highlights/issues 는 위 "이번 주 업무일지"에 실제로 언급된 내용에서만 도출하고, 각 항목에 근거 log_id를 포함하세요.
 - "성공적으로", "순조롭게", "잘 진행 중", "지연되고 있다" 같은 진행 상태에 대한 평가/판단 표현은 쓰지 마세요. 로그 내용을 정리하고 주어진 KPI 숫자와 대조하는 것까지만 하세요.
 - 다음 주 우선순위는 이 리포트에 포함하지 마세요 (시스템이 별도로 계산해 붙입니다).
 """
@@ -263,12 +277,16 @@ def build_wish_match_prompt(stuck_member, candidate_log, other_issue_logs):
   "match_found": true 또는 false,
   "helper_member_id": "매칭된 멤버의 member_id, 없으면 빈 문자열",
   "helper_log_id": "매칭된 로그의 log_id (위 목록에 실제 존재하는 것만), 없으면 빈 문자열",
+  "helper_topic": "매칭된 로그가 다룬 주제를 2~5단어의 짧은 구로 일반화 (예: '모델 경량화', 'PG사 정산 연동'). 원문 문장을 그대로 인용하지 마세요. 없으면 빈 문자열",
   "reason": "왜 이 로그가 비슷한 문제를 해결한 사례라고 판단했는지, 없으면 빈 문자열"
 }}
 
 작성 지침:
 - is_stuck=false 이면 나머지 필드는 전부 빈 값으로 두세요.
 - helper_log_id 는 반드시 위 "다른 멤버들의 이슈 로그" 목록에 실제로 있는 log_id만 쓰세요.
+- helper_topic 은 요청자에게 그대로 노출되는 값입니다 -- 해결 방법의 상세나 원문 문장이 아니라
+  "무슨 주제였는지"만 짧게 일반화하세요 (예: 원문이 "메모리 캐싱 로직 수정으로 크래시 해결"이면
+  helper_topic 은 "크래시 이슈 해결" 정도로만 — 구체적 수정 방법을 담지 마세요).
 - 확신이 없으면 match_found=false 로 두세요 (억지로 매칭하지 마세요).
 """
 
@@ -283,11 +301,16 @@ def build_evidence_package_prompt(store, member, quarter, goals_with_logs):
                 for link, kpi in links
             )
         log_lines = "\n".join(f"    - log_id={log['log_id']} [{log['date']}] {log['text']}" for log in logs) or "    (분기 중 업무일지 없음)"
-        blocks.append(
+        block = (
             f"- goal_id: {goal['goal_id']} | title: {goal['title']} | type: {goal['type']}\n"
             f"  KPI: {kpi_info or '없음 (정성 목표)'}\n"
-            f"  분기 누적 업무일지:\n{log_lines}"
         )
+        if not links:
+            milestones = store.goal_milestones(goal["goal_id"])
+            if milestones:
+                block += "\n".join(_milestone_lines(milestones)) + "\n"
+        block += f"  분기 누적 업무일지:\n{log_lines}"
+        blocks.append(block)
     goals_block = "\n".join(blocks)
 
     return f"""{SYSTEM_PREAMBLE}
@@ -319,5 +342,6 @@ def build_evidence_package_prompt(store, member, quarter, goals_with_logs):
 작성 지침:
 - citations 의 log_id/date 는 반드시 위에 주어진 실제 값만 사용하세요 (지어내지 마세요).
 - 각 goal 당 citations 는 최소 1개 이상 포함하세요 (업무일지가 있는 경우).
-- progress_assessment 는 정량 목표의 경우 반드시 KPI 현재/목표값을 인용하세요.
+- progress_assessment 는 정량 목표의 경우 반드시 KPI 현재/목표값을 인용하고, 정성 목표의 경우 마일스톤
+  상태(본인 보고)를 인용하되 검증된 것처럼 쓰지 마세요.
 """
