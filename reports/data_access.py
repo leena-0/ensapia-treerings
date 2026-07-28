@@ -57,6 +57,7 @@ class DataStore:
         self.goals_by_id = {g["goal_id"]: g for g in self.goals}
         self.kpis_by_id = {k["kpi_id"]: k for k in self.kpis}
         self.logs_by_id = {log["log_id"]: log for log in self.slack_logs}
+        self.sub_goals_by_id = {sg["sub_goal_id"]: sg for sg in self.sub_goals_all}
 
         self.goals_by_member = defaultdict(list)
         for g in self.goals:
@@ -152,17 +153,6 @@ class DataStore:
         if week_start is not None:
             return next((r for r in rows if r["week_start"] == week_start), None)
         return rows[-1] if rows else None
-
-    def member_blocked_subgoal_ids(self, member_id):
-        """본인이 가장 최근 체크인에서 '막힘'으로 표시한 하위목표 id 목록.
-        코칭 카드 생성(run_coaching)이 "본인이 막힘을 선택한 것만 전달"하도록 걸러내는 게이트로 쓴다."""
-        out = []
-        for goal in self.member_goals(member_id):
-            for sg in self.sub_goals(goal["goal_id"]):
-                latest = self.latest_checkin(sg["sub_goal_id"])
-                if latest and latest["status"] == "막힘":
-                    out.append(sg["sub_goal_id"])
-        return out
 
 
 def record_subgoal_checkin(sub_goal_id, week_start, week_end, member_id, status):

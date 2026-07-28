@@ -1,0 +1,7 @@
+[
+  {"team": "사업부", "user_id": "M06", "subgoal_id": "sg_hold_01", "subgoal_title": "이탈 방지 캠페인 2차", "status": "on_hold", "week_of": "2026-06-15", "note": "의도적 보류 - 다음 분기로 미룸"},
+  {"team": "사업부", "user_id": "M03", "subgoal_id": "sg_block_01", "subgoal_title": "온보딩 실험 iOS 크래시", "status": "blocked", "week_of": "2026-06-15", "note": "앱개발팀 대응 대기"},
+
+  {"team": "사업부", "user_id": "M05", "subgoal_id": "sg_block_02", "subgoal_title": "결제 퍼널 PG사 연동", "status": "blocked", "week_of": "2026-06-01", "note": "PG사 API 스펙 확정 대기, 2주 넘게 진전 없음"},
+  {"team": "사업부", "user_id": "M05", "subgoal_id": "sg_block_02", "subgoal_title": "결제 퍼널 PG사 연동", "status": "blocked", "week_of": "2026-06-15", "note": "여전히 PG사 회신 없음, 계속 막혀 있음"}
+]

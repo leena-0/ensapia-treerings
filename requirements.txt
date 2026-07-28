@@ -3,3 +3,10 @@ slack-sdk==3.43.0
 slack-bolt==1.30.0
 fpdf2==2.8.7
 fonttools==4.63.0
+
+# 코칭 카드 서비스 (구현명세_코칭카드 스택)
+langgraph
+langchain-core
+fastapi
+uvicorn[standard]
+pydantic

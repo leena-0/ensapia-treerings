@@ -6,6 +6,18 @@
 # Python
 __pycache__/
 *.pyc
+.venv/
+venv/
 
 # OS
 .DS_Store
+
+# 기존 ENSAPIA_Project 작업 (보관용 — GitHub 업로드 제외)
+_archive/
+
+# Claude Code / OMC 로컬 도구 폴더 (개인 설정 — GitHub 업로드 제외)
+.claude/
+.omc/
+
+# 코칭 카드 실행 결과(JSON 로그)
+output/
