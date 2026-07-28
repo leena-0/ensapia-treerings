@@ -51,14 +51,9 @@ DETECTOR_NODES = {
     "unrecognized_work": ("detect_unrecognized", nodes.detect_unrecognized),
 }
 
-# 기본 활성 탐지기: 3종 (2026-07-28 완성본 §5-2 확정). "부하 편중"/"미인지 성과"는 최종
-# 스펙에서 명시적으로 제외됐다 — 둘 다 "무엇이 과부하/눈에 띄는 성과인지"를 AI가 판단해야
-# 하는 평가 행위라 §4-1 원칙(AI는 분류·대조·계수·추출만, 잘함/못함 판정은 하지 않는다)과
-# 충돌하기 때문이다. 미인지 성과에 대한 동료 인정은 씨앗(§6-5)이 대신 담당한다.
-# detect_load/detect_unrecognized 노드 자체는 코드에 남겨둔다 -- DETECTOR_NODES 레지스트리에
-# 그대로 있고 enabled_detectors 로 명시적으로 켜면 여전히 동작하니, 완전 삭제가 아니라
-# "기본값에서 제외"로 처리했다.
-DEFAULT_DETECTORS = ("dependency_bottleneck", "unresolved_request", "rework_loop")
+# 기본 활성 탐지기: 5종 모두 (v10.2 확정 — 탐지는 전부 코드/결정론이고, verify_evidence의
+# 근거 2건 미만 폐기 + assign_confidence의 low 폐기 + 슬롯 분리 선별로 오탐을 걸러낸다).
+DEFAULT_DETECTORS = tuple(DETECTOR_NODES.keys())
 
 
 def build_graph(top_n: int = 5, enabled_detectors=DEFAULT_DETECTORS):
@@ -121,8 +116,7 @@ def run_coaching(team: str, period_start: date, period_end: date, *,
       - llm 을 주입하면 그것으로(테스트 스텁 가능),
       - 미지정 & use_llm=True 면 실제 Gemini,
       - use_llm=False 면 LLM 없이 코드 템플릿으로 서술(오프라인).
-    enabled_detectors 로 탐지기를 선택(기본: 3종 -- 부하 편중/미인지 성과는 완성본 §5-2에서
-    제외됨, DEFAULT_DETECTORS 주석 참고). 필요하면 명시적으로 켤 수 있다.
+    enabled_detectors 로 탐지기를 선택(기본: 5종 전부).
     adoption_stats: {(card_type, manager_id): {"adopt": n, "dismiss": n}} — 점수식의 채택률보정 항.
       미지정이면 이력 없음으로 간주해 모든 유형에 중립값(0.5)을 적용한다.
     """
