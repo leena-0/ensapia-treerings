@@ -4,7 +4,13 @@ LangGraph 파이프라인 조립 + 실행 (구현명세_코칭카드 §6).
 
 흐름:
   collect → [detect_bottleneck | unresolved | rework | load | unrecognized] (병렬)
-          → merge → verify(코드) → score → confidence → select → generate(LLM) → split_urgent
+          → merge → verify(코드) → confidence → score → split_urgent → select → generate(LLM)
+          → finalize_urgent → END
+  collect → detect_blocked_escalation (병렬, 위 흐름과 독립) ─────────────────→ finalize_urgent
+
+detect_blocked_escalation 은 merge/verify/confidence/score/select/generate 를 전부 건너뛰고
+바로 finalize_urgent 로 간다 — 이유는 nodes.detect_blocked_escalation 문서 참고.
+split_urgent 가 select(개수 제한)보다 앞에 있는 이유는 nodes.split_urgent 문서 참고.
 """
 from __future__ import annotations
 
@@ -29,6 +35,7 @@ class CoachState(TypedDict, total=False):
     rework_candidates: list
     load_candidates: list
     unrecognized_candidates: list
+    blocked_escalation_candidates: list
     candidates: list
     adoption_stats: dict
     cards: list
@@ -55,13 +62,15 @@ def build_graph(top_n: int = 5, enabled_detectors=DEFAULT_DETECTORS):
     enabled = [DETECTOR_NODES[c] for c in enabled_detectors if c in DETECTOR_NODES]
     for node_name, fn in enabled:
         g.add_node(node_name, fn)
+    g.add_node("detect_blocked_escalation", nodes.detect_blocked_escalation)
     g.add_node("merge", nodes.merge_candidates)
     g.add_node("verify", nodes.verify_evidence)
     g.add_node("confidence", nodes.assign_confidence)
     g.add_node("score", nodes.score_and_rank)
+    g.add_node("split_urgent", nodes.split_urgent)
     g.add_node("select", partial(nodes.select_top_n, n=top_n))
     g.add_node("generate", nodes.generate_card_text)
-    g.add_node("split_urgent", nodes.split_urgent)
+    g.add_node("finalize_urgent", nodes.finalize_urgent)
 
     g.add_edge(START, "collect")
     if enabled:
@@ -70,14 +79,21 @@ def build_graph(top_n: int = 5, enabled_detectors=DEFAULT_DETECTORS):
             g.add_edge(node_name, "merge")     # merge 는 활성 탐지기 모두 끝난 뒤(fan-in)
     else:
         g.add_edge("collect", "merge")
+    # blocked_escalation 은 카드 후보 경로와 완전히 독립된 병렬 분기 — merge/verify/confidence/
+    # score/select/generate 를 전부 건너뛰고 finalize_urgent 에서 다시 만난다.
+    g.add_edge("collect", "detect_blocked_escalation")
+    g.add_edge("detect_blocked_escalation", "finalize_urgent")
+
     g.add_edge("merge", "verify")
     # confidence 가 score 보다 먼저다 — v10.2 점수식이 확신도 항을 쓰기 때문(nodes.score_and_rank).
     g.add_edge("verify", "confidence")
     g.add_edge("confidence", "score")
-    g.add_edge("score", "select")
+    # split_urgent 가 select(개수 제한) 보다 앞이다 — 이유는 nodes.split_urgent 문서 참고.
+    g.add_edge("score", "split_urgent")
+    g.add_edge("split_urgent", "select")
     g.add_edge("select", "generate")
-    g.add_edge("generate", "split_urgent")
-    g.add_edge("split_urgent", END)
+    g.add_edge("generate", "finalize_urgent")
+    g.add_edge("finalize_urgent", END)
     return g.compile()
 
 

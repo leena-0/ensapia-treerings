@@ -27,16 +27,24 @@
 ```
                     ┌─→ detect_bottleneck ──┐
                     ├─→ detect_unresolved ──┤
-START → collect ────┼─→ detect_rework ──────┼─→ merge → verify → confidence → score → select → generate → split_urgent → END
-                    ├─→ detect_load ────────┤
-                    └─→ detect_unrecognized ┘
+START → collect ────┼─→ detect_rework ──────┼─→ merge → verify → confidence → score → split_urgent → select → generate ─┐
+                    ├─→ detect_load ────────┤                                                                           │
+                    └─→ detect_unrecognized ┘                                                                          finalize_urgent → END
+                                                                                                                          │
+        └────────────────────────────────→ detect_blocked_escalation ───────────────────────────────────────────────────┘
 ```
 
 - **라우터(조건 분기) 없음.** "어떤 탐지기를 켤지"는 실행 중 분기가 아니라, `build_graph(enabled_detectors=...)`
-  호출 시점에 그래프에 어떤 노드/엣지를 추가할지로 결정된다(기본은 5종 전부).
+  호출 시점에 그래프에 어떤 노드/엣지를 추가할지로 결정된다(기본은 5종 전부). `split_urgent`가 카드/긴급을
+  나누는 것도 라우터가 아니라 — 이미 다 처리된 후보 리스트를 조건 하나로 두 리스트에 담는 평범한
+  데이터 분류 함수다(§7 참고).
 - **fan-out/fan-in**: `collect`에서 활성 탐지기 전부로 병렬 분기하고, 전부 끝나야 `merge`로 모인다.
   탐지기들은 서로 다른 state 키(`*_candidates`)에만 쓰므로 충돌하지 않는다.
 - **confidence가 score보다 먼저다** — v10.2 점수식이 확신도 항을 쓰기 때문(`score_and_rank`).
+- **`split_urgent`가 `select`(개수 제한)보다 먼저다** — 그래야 진짜 긴급한 후보가 그 주 다른
+  후보에 밀려 개수 제한에서 조용히 잘려나가는 일이 없다(§7).
+- **`detect_blocked_escalation`은 완전히 별도 병렬 분기**다 — `merge`/`verify`/`confidence`/`score`/
+  `select`/`generate`를 전부 건너뛰고 `finalize_urgent`에서 카드 파생 긴급 알림과 합쳐진다(§7).
 - 파일 구성: `graph.py`(그래프 조립·`run_coaching()` 진입점) / `nodes.py`(각 단계 실제 로직) /
   `data_adapter.py`(CSV 목데이터 → 스키마 변환) / `schemas.py`(pydantic 모델) /
   `store.py`(인메모리 저장소) / `api.py`(FastAPI).
@@ -108,14 +116,38 @@ valid = [e for e in c["evidence"]
 (`select_top_n`). 미인지 성과는 영향범위가 항상 1명(계수 0.5 고정)이라 단일 순위로 세우면 3명짜리
 병목에 밀려 영원히 선별되지 않기 때문이다. 인정 후보가 없는 주기엔 문제 카드로 빈 슬롯을 채운다.
 
-## 7. 배치 vs 즉시(`split_urgent`)
+## 7. 배치 vs 즉시(`split_urgent` / `detect_blocked_escalation` / `finalize_urgent`)
 
-- **긴급 조건**: `영향 3명 이상 AND 지속 5일 이상`, 또는 **문제 카드**에 릴리스/납기 키워드
-  ("릴리스"/"출시"/"납기"/"배포"/"장애"/"긴급")가 근거에 포함.
+긴급 조건은 3가지, 그런데 처리 방식이 둘로 나뉜다.
+
+**① 카드에서 파생되는 긴급(`split_urgent`)** — `영향 3명 이상 AND 지속 5일 이상`, 또는
+**문제 카드**에 릴리스/납기 키워드("릴리스"/"출시"/"납기"/"배포"/"장애"/"긴급")가 근거에 포함.
+
 - 릴리스 키워드 체크는 문제 카드에만 적용한다 — 인정 카드가 "배포 완료"처럼 좋은 소식에 같은
   단어를 써도 긴급으로 잘못 튀지 않게 하기 위함(실측으로 발견하고 고친 버그, §8 참고).
-- 조건을 만족하면 격주 배치에서 빠져서 **즉시 DM 경로**(`urgent_alerts`)로 간다. 3명짜리 병목이라도
-  지속이 짧으면(예: 3일) 카드로 남는다 — affected와 duration 둘 다 필요하다.
+- **`select_top_n`(개수 제한)보다 먼저 실행한다.** 원래는 `generate`(LLM 서술) 뒤에 있었는데,
+  그러면 진짜 긴급한 후보도 그 주 다른 후보가 많으면 개수 제한에 걸려 조용히 잘려나갈 수
+  있었다(긴급은 격주 카드 개수 제한과 무관하게 나가야 하는데도 — 실제로 이 순서 문제를 찾아서
+  고쳤다). 그래서 아직 LLM 서술 전인 원시 후보를 다루고, 긴급으로 분리된 건은 **LLM을 기다리지
+  않고 코드 템플릿으로 바로 서술한다** — 즉시 나가야 할 알림이 LLM 호출 실패/지연에 발목 잡히면
+  안 되기 때문이다.
+- 조건을 만족하면 격주 배치에서 빠져서 즉시 DM 경로로 간다. 3명짜리 병목이라도 지속이 짧으면
+  (예: 3일) 카드로 남는다 — affected와 duration 둘 다 필요하다.
+
+**② 자기표시 기반 긴급(`detect_blocked_escalation`)** — 본인이 주간 상태에서 직접 `blocked`로
+표시한 하위목표가 14일(2주) 이상 지속(명세 제약 1 — "정체를 자동 판정하지 않는다": 로그가
+며칠째 없는 게 막힘인지 의도적 보류(`on_hold`)인지 AI가 구분할 수 없으므로, 본인이 직접
+`blocked`를 선택한 것만 신호로 받는다).
+
+- 이 경로는 카드 후보 파이프라인(`merge`/`verify`/`confidence`/`score`/`select`/`generate`)을
+  **전부 건너뛴다.** 세 가지가 개념적으로 안 맞기 때문이다: 근거 검증은 "LLM이 지어내지 않았는지"
+  보는 건데 여긴 LLM이 관여 안 하는 사람의 직접 입력이라 위조 위험이 없고, 확신도는 로그 기반
+  신호의 확실성 척도라 자기 신고에는 안 맞고, 무엇보다 **다른 카드와 우선순위 점수 경쟁을 시키면
+  안 된다** — 그 주 다른 후보가 많다는 이유로 진짜 SOS가 조용히 탈락하면 안 되기 때문이다.
+- `finalize_urgent`에서 ①의 결과와 합쳐져 최종 `urgent_alerts`가 된다.
+- 단순화한 부분: `blocked → on_hold → blocked`처럼 중간에 풀렸다 다시 막힌 이력은 구분하지
+  않는다 — 가장 이른 `blocked` 선택 ~ 가장 최근 선택 사이 기간만 보고, 가장 최근 선택이
+  `blocked`가 아니면(이미 풀렸으면) 후보에서 뺀다.
 
 ## 8. LLM 서술 (`generate_card_text`)
 
@@ -195,7 +227,7 @@ GET  /urgent-alerts?manager_id=       긴급 사안
 
 | 도구 | 목적 |
 |---|---|
-| `coaching/selftest.py` | 시나리오 A/E/F/G/H/I + API 스모크 테스트. 회귀 확인용, 매 변경 후 실행 |
+| `coaching/selftest.py` | 시나리오 A/E/F/G/H/I/J + API 스모크 테스트. 회귀 확인용, 매 변경 후 실행 |
 | `coaching/scenario_validation.py` | 10개 시나리오(진짜 신호 3 + 디코이 7)로 선별 정확도 검증. `--slack`으로 결과 발송 가능 |
 | `coaching/scenario_bulk.py` | scenario_validation의 구조를 여러 "사이클"(독립된 가짜 팀)로 반복해, 다른 어휘에도 로직이 일반화되는지 + 실제 LLM 서술 다양성을 한 번에 확인 |
 
@@ -214,3 +246,10 @@ GET  /urgent-alerts?manager_id=       긴급 사안
 - 채택률보정 — 실제 채택/기각 이력이 쌓여야 의미가 생기는 항목인데, 지금 `CardStore`는 이 집계를
   갖고 있지 않다.
 - 저장소가 인메모리(`CardStore`) — 명세는 PostgreSQL을 가정. 실 서비스 전환 시 이 계층만 교체.
+- 자동 격주 배치 스케줄러 없음 — 지금은 전부 수동 실행(CLI/API 호출), cron 같은 자동 트리거는
+  없다.
+- 명세 §10의 시나리오 B/C(표현이 다른 병목 묶기 / 과잉 병합 방지)는 자동 테스트로 없다 — A/E/F/
+  G/H/J만 `selftest.py`에 있음(§3-1의 어휘 기반 한계와 직결되는 부분이라 자동화 가치가 큼).
+- ~~제약 1(정체 자동 판정 금지)의 세 번째 긴급 조건(본인이 2주 이상 blocked 표시) 미구현~~ —
+  `detect_blocked_escalation`으로 해결됨(§7). `weekly_status`가 계산은 되지만 아무도 안 읽던
+  죽은 입력이었던 걸 실제로 확인하고 고쳤다.

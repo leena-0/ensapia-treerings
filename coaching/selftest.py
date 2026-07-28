@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import io
 import sys
-from datetime import datetime
+from datetime import date, datetime
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
@@ -103,14 +103,48 @@ def test_scenario_G_confidence_low_dropped():
 
 
 def test_scenario_H_split_urgent():
-    """H — 4명이 8일째 대기 → 긴급으로 분리."""
-    ev = [Evidence(message_id=f"m{i}", user_name=f"U{i}", excerpt="리워드 승인 대기", timestamp=datetime(2026, 6, i + 1)) for i in range(4)]
-    card = CoachingCard(card_id="card_001", card_type="dependency_bottleneck", confidence="high",
-                        headline="4명 대기", body="...", subjects=["u1", "u2", "u3", "u4"],
-                        evidence=ev, affected_count=4, duration_days=8)
-    res = nodes.split_urgent({"cards": [card], "work_logs": []})
-    assert len(res["cards"]) == 0 and len(res["urgent_alerts"]) == 1, "긴급으로 분리되어야"
+    """H — 4명이 8일째 대기 → 긴급으로 분리.
+
+    split_urgent 는 이제 select_top_n 이전(원시 후보 dict 단계)에서 동작한다 — 진짜 긴급한
+    후보가 개수 제한에 걸려 조용히 잘리는 걸 막기 위해서다.
+    """
+    ev = [{"message_id": f"m{i}", "user_name": f"U{i}", "permalink": "", "excerpt": "리워드 승인 대기",
+           "timestamp": datetime(2026, 6, i + 1)} for i in range(4)]
+    cand = {"card_type": "dependency_bottleneck", "confidence": "high", "subjects": ["u1", "u2", "u3", "u4"],
+            "evidence": ev, "affected_count": 4, "duration_days": 8, "canonical": "리워드 승인"}
+    res = nodes.split_urgent({"candidates": [cand], "work_logs": []})
+    assert len(res["candidates"]) == 0 and len(res["urgent_alerts"]) == 1, "긴급으로 분리되어야"
     print("PASS H: 영향 4명·8일 → 긴급 분리")
+
+
+def test_scenario_J_blocked_escalation():
+    """J — 본인이 2주 이상 blocked로 표시하면(제약 1, §7-5) 즉시 긴급 알림. on_hold는 무시.
+
+    verify_evidence/confidence/score/select 를 거치지 않고 detect_blocked_escalation 이
+    직접 UrgentAlert 를 만든다(nodes.detect_blocked_escalation 문서 참고).
+    """
+    from coaching.schemas import TeamContext, WeeklyStatusSelection
+
+    tc = TeamContext(team_id="사업부", members=[{"user_id": "u1", "user_name": "김도윤", "role": "팀원"}],
+                     manager_id="mgr", period_start=date(2026, 6, 1), period_end=date(2026, 6, 14))
+    weekly = [
+        WeeklyStatusSelection(user_id="u1", subgoal_id="sg1", subgoal_title="온보딩 실험",
+                              status="blocked", week_of=date(2026, 6, 1), note="앱개발팀 대응 대기"),
+        WeeklyStatusSelection(user_id="u1", subgoal_id="sg1", subgoal_title="온보딩 실험",
+                              status="blocked", week_of=date(2026, 6, 15)),
+        # on_hold(보류)는 제약 1에 따라 긴급 후보가 되면 안 됨
+        WeeklyStatusSelection(user_id="u2", subgoal_id="sg2", subgoal_title="캠페인",
+                              status="on_hold", week_of=date(2026, 6, 1)),
+    ]
+    out = nodes.detect_blocked_escalation({"weekly_status": weekly, "team_context": tc, "work_logs": []})
+    alerts = out["blocked_escalation_candidates"]
+    assert len(alerts) == 1, f"blocked 1건만 긴급이어야, 실제 {len(alerts)}"
+    assert alerts[0].subjects == ["u1"] and alerts[0].card_type == "blocked_escalation"
+
+    # finalize_urgent 가 split_urgent 의 결과와 잘 합쳐지는지도 확인
+    merged = nodes.finalize_urgent({"urgent_alerts": [], "blocked_escalation_candidates": alerts})
+    assert len(merged["urgent_alerts"]) == 1
+    print("PASS J: 2주 이상 blocked 자기표시 → 즉시 긴급, on_hold는 무시, finalize_urgent 병합 확인")
 
 
 def test_scenario_I_permission():
@@ -183,6 +217,7 @@ if __name__ == "__main__":
     test_scenario_F_select_cap()
     test_scenario_G_confidence_low_dropped()
     test_scenario_H_split_urgent()
+    test_scenario_J_blocked_escalation()
     test_scenario_I_permission()
     test_api_smoke()
     print("\n✅ 전체 통과")

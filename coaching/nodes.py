@@ -89,6 +89,7 @@ CARD_TYPE_LABEL_KO = {
     "rework_loop": "재작업 반복",
     "load_imbalance": "부하 편중",
     "unrecognized_work": "미인지 성과",
+    "blocked_escalation": "장기 막힘",
 }
 
 
@@ -99,6 +100,63 @@ def collect_period_logs(state: dict) -> dict:
     # work_logs / blocked_selections 는 러너가 초기 상태로 넣어준다. 여기서는 통과.
     blocked = [s for s in state.get("weekly_status", []) if getattr(s, "status", None) == "blocked"]
     return {"blocked_selections": blocked}
+
+
+BLOCKED_ESCALATION_MIN_DAYS = 14
+
+
+def detect_blocked_escalation(state: dict) -> dict:
+    """[코드] 본인이 주간 상태에서 직접 blocked로 표시한 하위목표가 14일(2주) 이상
+    지속되면 즉시 긴급 알림으로 만든다 (제약 1: 정체는 자동 판정하지 않고, 본인이
+    blocked라고 표시한 것만 신호로 받는다. §7-5 세 번째 긴급 조건).
+
+    verify_evidence·assign_confidence·score_and_rank·select_top_n 을 전부 건너뛰고
+    바로 UrgentAlert 를 만든다(finalize_urgent 에서 split_urgent 결과와 합쳐짐) — 이 신호는
+    사람이 직접 입력한 상태값이라(LLM 미개입) 위조 위험이 없어 검증이 필요 없고, "확신도"라는
+    개념도 안 맞으며, 다른 카드와 점수 경쟁을 시키면(select_top_n) 그 주 다른 후보가 많다는
+    이유로 진짜 SOS가 조용히 탈락할 수 있기 때문이다.
+
+    단순화: 상태가 blocked -> on_hold -> blocked 처럼 중간에 풀렸다 다시 막힌 이력까지는
+    구분하지 않는다. 이 (user, subgoal) 조합에서 가장 이른 blocked 선택 ~ 가장 최근 선택
+    사이의 기간만 보고, 가장 최근 선택이 blocked 가 아니면(이미 풀렸으면) 후보에서 뺀다.
+    """
+    selections = state.get("weekly_status", [])
+    if not selections:
+        return {"blocked_escalation_candidates": []}
+
+    by_key: dict[tuple, list] = {}
+    for s in selections:
+        by_key.setdefault((s.user_id, s.subgoal_id), []).append(s)
+
+    tc = state.get("team_context")
+    members = {m["user_id"]: m["user_name"] for m in tc.members} if tc else {}
+    detected_at = max((w.timestamp for w in state.get("work_logs", [])), default=datetime(2026, 1, 1))
+
+    alerts = []
+    for (uid, _sgid), entries in by_key.items():
+        entries = sorted(entries, key=lambda e: e.week_of)
+        if entries[-1].status != "blocked":
+            continue  # 가장 최근 선택이 blocked 가 아니면 이미 풀린 것
+        blocked_entries = [e for e in entries if e.status == "blocked"]
+        span_days = (entries[-1].week_of - blocked_entries[0].week_of).days
+        if span_days < BLOCKED_ESCALATION_MIN_DAYS:
+            continue
+        latest = entries[-1]
+        user_name = members.get(uid, uid)
+        excerpt = latest.note or f"{latest.subgoal_title} — {span_days}일째 막힘으로 표시"
+        alerts.append(UrgentAlert(
+            alert_id=f"urgent_blocked_{len(alerts) + 1:03d}",
+            card_type="blocked_escalation",
+            reason="본인이 2주 이상 '막힘'으로 표시",
+            headline=f"{user_name} 님이 '{latest.subgoal_title}' 작업을 {span_days}일째 막힘으로 표시했습니다.",
+            subjects=[uid],
+            evidence=[Evidence(
+                message_id=f"weekly:{latest.subgoal_id}:{latest.week_of}", user_name=user_name, permalink="",
+                excerpt=excerpt, timestamp=datetime.combine(latest.week_of, datetime.min.time()),
+            )],
+            detected_at=detected_at,
+        ))
+    return {"blocked_escalation_candidates": alerts}
 
 
 def detect_bottleneck(state: dict) -> dict:
@@ -479,24 +537,41 @@ def generate_card_text(state: dict) -> dict:
 
 
 def split_urgent(state: dict) -> dict:
-    """긴급 건 분리(§7-5): 영향 3명↑ & 지속 5일↑ 이거나 릴리스/납기 키워드 포함 → 즉시 DM 경로.
+    """긴급 조건 재확인 + 분리(§7-5): 영향 3명↑ & 지속 5일↑ 이거나 릴리스/납기 키워드 포함
+    → 즉시 DM 경로.
 
-    릴리스 키워드 체크는 '문제' 카드에만 적용한다 — 미인지 성과(인정) 카드는 "배포 완료"처럼
+    **select_top_n(개수 제한) 이전에** 실행한다 — 원래는 generate(LLM 서술) 뒤에 있었는데,
+    그러면 진짜 긴급한 후보도 그 주 다른 후보에 밀려 select_top_n에서 개수 제한에 걸려
+    조용히 잘려나갈 수 있었다(긴급은 격주 카드 개수 제한과 무관하게 나가야 하는데도).
+    그래서 아직 LLM 서술 전인 원시 후보(dict)를 다루고, 긴급으로 분리된 건은 LLM을
+    기다리지 않고 코드 템플릿으로 바로 서술한다 — 긴급 알림은 즉시 나가야 하므로 LLM
+    호출/실패에 발이 묶이면 안 된다.
+
+    릴리스 키워드 체크는 '문제' 후보에만 적용한다 — 미인지 성과(인정) 후보는 "배포 완료"처럼
     같은 단어를 좋은 소식으로 쓸 수 있고, 그런 경우까지 즉시 긴급 알림으로 보내면 안 된다.
     """
     detected_at = max((w.timestamp for w in state.get("work_logs", [])), default=datetime(2026, 1, 1))
-    cards, urgent = [], []
-    for card in state.get("cards", []):
-        release_kw = (card.card_type in PROBLEM_TYPES
-                      and any(any(k in e.excerpt for k in URGENT_KEYWORDS) for e in card.evidence))
-        is_urgent = (card.affected_count >= 3 and card.duration_days >= 5) or release_kw
+    candidates, urgent = [], []
+    for c in state.get("candidates", []):
+        release_kw = (c["card_type"] in PROBLEM_TYPES
+                      and any(any(k in e["excerpt"] for k in URGENT_KEYWORDS) for e in c["evidence"]))
+        is_urgent = (c["affected_count"] >= 3 and c["duration_days"] >= 5) or release_kw
         if is_urgent:
             urgent.append(UrgentAlert(
-                alert_id=f"urgent_{len(urgent)+1:03d}", card_type=card.card_type,
-                reason=("영향 3명 이상·5일 이상 지속" if card.affected_count >= 3 and card.duration_days >= 5
+                alert_id=f"urgent_{len(urgent)+1:03d}", card_type=c["card_type"],
+                reason=("영향 3명 이상·5일 이상 지속" if c["affected_count"] >= 3 and c["duration_days"] >= 5
                         else "릴리스/납기 관련 병목"),
-                headline=card.headline,
-                subjects=card.subjects, evidence=card.evidence, detected_at=detected_at))
+                headline=_template_headline(c),
+                subjects=c["subjects"], evidence=[Evidence(**e) for e in c["evidence"]],
+                detected_at=detected_at))
         else:
-            cards.append(card)
-    return {"cards": cards, "urgent_alerts": urgent}
+            candidates.append(c)
+    return {"candidates": candidates, "urgent_alerts": urgent}
+
+
+def finalize_urgent(state: dict) -> dict:
+    """detect_blocked_escalation 이 만든 즉시-알림(이미 완성된 UrgentAlert)을 split_urgent 가
+    만든 urgent_alerts 에 합친다. 카드에서 파생된 긴급 경로와 상태(blocked) 기반 긴급 경로,
+    두 병렬 흐름이 여기서 다시 만난다."""
+    urgent = list(state.get("urgent_alerts", [])) + list(state.get("blocked_escalation_candidates", []))
+    return {"urgent_alerts": urgent}
