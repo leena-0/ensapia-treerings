@@ -23,7 +23,6 @@ from .schemas import CoachingCard, Evidence, UrgentAlert
 WAIT_MARKERS = ("대기", "승인", "컨펌", "회신", "착수 불가", "확정 전", "보류", "지연", "기다")
 REQUEST_MARKERS = ("요청", "문의", "도움", "지원 요청", "협업 요청")
 RESOLUTION_MARKERS = ("완료", "해결", "반영", "처리", "적용", "복구")
-REWORK_MARKERS = ("수정", "롤백", "재작업", "되돌", "다시 작업", "재수정")
 ACHIEVEMENT_MARKERS = ("완료", "해결", "달성", "출시", "릴리스", "배포", "성공")
 URGENT_KEYWORDS = ("릴리스", "출시", "납기", "배포", "장애", "긴급")
 
@@ -233,21 +232,50 @@ def detect_unresolved(state: dict) -> dict:
     return {"unresolved_candidates": cands}
 
 
+_REWORK_UNAMBIGUOUS = ("롤백", "재작업", "되돌", "다시 작업", "재수정")
+
+
+def _is_rework_mention(text: str) -> bool:
+    """재작업 마커 중 "수정"은 그 자체로 반복을 의미하지 않는다 -- "~을 수정해 해결함"처럼
+    1회성 완료 서술에도 흔히 쓰인다(실측 버그: 동일한 완료 문장이 여러 주에 걸쳐 그대로 반복
+    저장된 목데이터가 "3회 재작업"으로 오탐됨). 재작업/롤백/되돌/다시 작업/재수정처럼 단어
+    자체가 반복을 뜻하는 마커는 그대로 인정하고, "수정"만 있는 경우엔 그 문장에 완료/해결
+    마커(RESOLUTION_MARKERS)가 함께 있으면 -- 즉 "고쳐서 끝냈다"는 뜻이면 -- 재작업 신호로
+    보지 않는다."""
+    if _has(text, _REWORK_UNAMBIGUOUS):
+        return True
+    return "수정" in text and not _has(text, RESOLUTION_MARKERS)
+
+
 def detect_rework(state: dict) -> dict:
-    """[코드] 수정/롤백/재작업 언급이 한 사람에게 3건 이상 누적되면 후보."""
+    """[코드] 재작업 성격의 언급이 한 사람에게 서로 다른 사건으로 3건 이상 누적되면 후보.
+
+    실측 버그: 목데이터가 goal의 같은 단계(stage) 문장을 여러 주에 걸쳐 문자 그대로 반복
+    저장하는 특성이 있어(seed/generate_mock_data.py 내러티브 재사용), "한 번 있었던 일"이
+    "3회 반복 수정"으로 잘못 집계됐다. 그래서 정규화한 문장이 완전히 같으면 하나의 사건으로
+    묶고, 서로 구별되는 사건이 3건 이상일 때만 후보로 삼는다.
+    """
     logs = state.get("work_logs", [])
     by_user = {}
     for w in logs:
-        if _has(w.text, REWORK_MARKERS):
+        if _is_rework_mention(w.text):
             by_user.setdefault(w.user_id, []).append(w)
     cands = []
     for uid, ws in by_user.items():
-        if len(ws) >= 3:
-            ev = [_ev(w) for w in sorted(ws, key=lambda w: w.timestamp)[:3]]
+        seen_text = set()
+        distinct = []
+        for w in sorted(ws, key=lambda w: w.timestamp):
+            norm = " ".join(w.text.split())
+            if norm in seen_text:
+                continue
+            seen_text.add(norm)
+            distinct.append(w)
+        if len(distinct) >= 3:
+            ev = [_ev(w) for w in distinct[:3]]
             cands.append({
                 "card_type": "rework_loop", "canonical": "",
                 "subjects": [uid], "evidence": ev,
-                "affected_count": 1, "duration_days": _duration_days(ev), "explicit_count": len(ws),
+                "affected_count": 1, "duration_days": _duration_days(ev), "explicit_count": len(distinct),
             })
     return {"rework_candidates": cands}
 

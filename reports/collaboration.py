@@ -16,6 +16,19 @@ from .data_access import DATA_DIR
 
 WISH_PENDING_PATH = os.path.join(DATA_DIR, "wish_pending.json")
 
+# 씨앗(협업) 집계에 포함되는 "완결" 상태. "confirmed"는 배치 스캔(wish_match.scan/check_replies)의
+# 기존 종료 상태(helper가 "도와줄게요"라고 답장한 시점)이고, "completed"는 /지원요청 커맨드
+# 경로의 종료 상태(helper가 실제 도움을 마쳤다고 표시하고, 요청자가 씨앗을 보낸 뒤 helper가
+# 화초/텃밭을 고른 시점) -- "합의"와 "완료"가 다른 강도의 근거라 상태명을 분리했지만, 둘 다
+# 협업이 실제로 있었다는 근거이므로 집계에는 동일하게 포함한다.
+COMPLETED_STATUSES = {"confirmed", "completed"}
+
+# helper 쪽의 응답이 필요한 상태 (홈탭 "내가 응답할 것" 알림에 사용).
+HELPER_ACTION_STATUSES = {"awaiting_helper_response", "awaiting_helper_plant_choice"}
+
+# 더 이상 진행되지 않는(요청자 쪽에서도 다시 신경 쓸 필요 없는) 상태.
+TERMINAL_STATUSES = COMPLETED_STATUSES | {"declined", "cancelled", "no_match", "confirmed_no_recipient"}
+
 
 def load_wish_pending():
     if not os.path.exists(WISH_PENDING_PATH):
@@ -25,10 +38,10 @@ def load_wish_pending():
 
 
 def quarter_wishes(member_id, records, quarter_start, quarter_end):
-    """그 분기(quarter_start~quarter_end, date 객체) 안에서 member_id 가 관여한 confirmed 소원만 추린다."""
+    """그 분기(quarter_start~quarter_end, date 객체) 안에서 member_id 가 관여한, 완결된 협업만 추린다."""
     out = []
     for r in records:
-        if r.get("status") != "confirmed":
+        if r.get("status") not in COMPLETED_STATUSES:
             continue
         checked_date = r.get("checked_at", "")[:10]
         if not (quarter_start.isoformat() <= checked_date <= quarter_end.isoformat()):
@@ -63,6 +76,7 @@ def member_collaboration_summary(member_id, store, quarter_start, quarter_end):
             "member_id": other_id, "name": other["name"], "team": other["team"],
             "topic": r.get("helper_topic") or r.get("problem_summary") or "",
             "month": (r.get("checked_at") or "")[:7],
+            "plant_type": r.get("plant_type"),  # "flower"/"crop", /지원요청 경로에서만 채워짐
         }
         if r.get("helper_member_id") == member_id:
             helped.append(entry)

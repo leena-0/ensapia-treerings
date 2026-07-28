@@ -99,9 +99,14 @@ def _subgoal_next_week_priorities(store, goals, week_logs, week_start):
     """
     확인 요청(§5-1, "이 시스템의 관문") 대상 목록: 이번 주 로그가 하나도 안 걸린 하위목표(건물).
     goal 단위가 아니라 sub_goal 단위인 이유 -- §5-1의 "목표별 상태"가 애초에 "하위목표별
-    완료/진행/미언급"으로 정의되어 있다. 아직 한 번도 손대지 않은(worked_days==0) 건물은
-    "정체"가 아니라 그냥 "미착수"이므로 확인 대상에서 제외한다 (§4-3 "진행 정체" 판정 원칙과
-    동일 -- 시작도 안 한 것에 막힘/보류를 묻는 건 무의미).
+    완료/진행/미언급"으로 정의되어 있다.
+
+    2026-07-28 정정: 예전엔 worked_days==0(아직 한 번도 안 건드림)인 건물을 "정체가 아니라
+    미착수"라는 이유로 확인 대상에서 뺐었다. 근데 그러면 "목표별 상태" 섹션엔 미언급으로 표시
+    되는데 확인 요청엔 안 뜨는 항목이 생겨(예: 6개 미언급 중 4개만 확인요청) 화면이 앞뒤가 안
+    맞았다. §5-1은 "미언급 항목의 상태 선택"이라고만 하지 worked_days 조건을 걸지 않았고,
+    미착수 항목도 대기/보류/막힘 중 하나로 답하는 게 여전히 말이 되므로(예: "아직 안 건드렸고
+    의도적으로 보류 중") 이 조건을 없애고 미언급 전부를 확인 대상으로 삼는다.
 
     2026-07-28 정정: current_status(select의 initial_option)는 반드시 "이번 week_start"의
     체크인만 쓴다 -- 완성본 §6-2 "선택은 다음 주간 확인까지 유효하다... 유효 기간을 두지 않으면
@@ -119,9 +124,6 @@ def _subgoal_next_week_priorities(store, goals, week_logs, week_start):
             evidence_ids = set(store.evidence_log_ids_by_subgoal.get(sg["sub_goal_id"], []))
             if evidence_ids & week_log_ids:
                 continue  # 이번 주 언급됨
-            p = subgoal_stage(store, sg["sub_goal_id"])
-            if p["worked_days"] == 0:
-                continue  # 아직 미착수 -- 확인 대상 아님
             existing = store.latest_checkin(sg["sub_goal_id"], week_start=week_start)
             out.append({
                 "goal_id": g["goal_id"], "goal_title": g["title"],

@@ -499,3 +499,25 @@ write 경로가 없었음) 대신 이 테이블의 실데이터를 읽도록 연
 스키마의 in_progress/waiting/on_hold/blocked 로 매핑(`reports/weekly_status_adapter.py` 신설,
 아래 참고). 위에서 언급된 "코칭 카드 캐시 staleness" 한계는 이 교체로 자연 해소된다 -- main의
 엔진은 매 실행 시 결정론적으로 재계산하고, 신호가 없으면 빈 결과를 명시적으로 반환한다.
+
+---
+
+## 21. reports/selftest.py — 개인 리포트/평가근거패키지/홈탭 크레인 회귀테스트 (2026-07-28 신설)
+
+`coaching/selftest.py`(팀원분 작성)와 같은 스타일 -- LLM 호출 없이, `assert` + `print("PASS ...")`로
+직접 실행하는 스크립트다(`python -m reports.selftest`). 그동안 이 파트(개인 주간 리포트/평가 근거
+패키지)엔 회귀테스트가 전혀 없어서 매번 스크립트를 즉석에서 짜서 손으로 확인했는데, 이번에 그동안
+고친 버그들(하위목표 상태 분류, 확인요청 범위, 체크인 유효기간, 크레인 임계값)을 재발 방지용으로
+고정했다.
+
+실제 `treerings.db`(SQLite)에 의존하지 않고 `FakeStore`(이 파일 안에 정의, `DataStore`가 노출하는
+메서드 중 필요한 것만 최소 구현)를 쓴다 -- 시드 데이터가 나중에 바뀌어도 이 테스트들은 흔들리지
+않아야 하기 때문이다(coaching/selftest.py가 실제 로그 대신 합성 `WorkLog`를 쓰는 것과 같은 이유).
+
+다루는 것: `_subgoal_weekly_status`(완료/진행/미언급 분류), `_subgoal_next_week_priorities`(미착수
+포함 여부, 체크인 주차 스코프), `_postprocess_personal`/`_postprocess_evidence`(인용 위조 폐기,
+마일스톤 주입), `_subgoal_summary_for_goal`(평가근거 라벨), `reports/progress.py`의
+`_business_days_elapsed`/홈탭 크레인 3단계 임계값 및 체크인 오버라이드·만료.
+
+의도적으로 안 다루는 것: LLM이 실제로 뭘 서술하는지(그건 매번 다르고 검증 불가능한 영역), 실제
+`treerings.db` 시드 데이터 자체의 내용(그건 회귀테스트가 아니라 데이터 검증 영역).

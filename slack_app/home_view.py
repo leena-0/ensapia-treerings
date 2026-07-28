@@ -17,7 +17,7 @@ import os
 from datetime import date
 
 from reports import cache_store
-from reports.collaboration import load_wish_pending, member_collaboration_summary
+from reports.collaboration import HELPER_ACTION_STATUSES, TERMINAL_STATUSES, load_wish_pending, member_collaboration_summary
 from reports.data_access import DATA_DIR
 from reports.generate_reports import QUARTER_END, QUARTER_START
 from reports.progress import subgoal_stage
@@ -177,9 +177,15 @@ def _notification_blocks(member, store):
             })
 
     pending_all = load_wish_pending()
-    my_pending = [r for r in pending_all if r.get("stuck_member_id") == member_id and r.get("status") == "pending"]
-    received = [r for r in pending_all if r.get("helper_member_id") == member_id and r.get("status") == "confirmed"]
-    blocks.append(_section(f"🌱 소원 — 내가 보낼 대기 {len(my_pending)}건 · 받은 요청 {len(received)}건"))
+    # 상태가 여러 갈래(§14 일지 기반 자동 경로의 pending/confirmed, /지원요청 온디맨드 경로의
+    # awaiting_*/helping/completed 등)로 늘어났으므로, "아직 안 끝난 내 요청"과 "지금 내가
+    # 응답해야 하는 것"만 구분해서 보여준다 -- 세부 상태는 각 DM 대화 안에서 이미 보이므로
+    # 홈탭까지 전부 나열할 필요는 없다.
+    my_open = [r for r in pending_all
+               if r.get("stuck_member_id") == member_id and r.get("status") not in TERMINAL_STATUSES]
+    needs_my_action = [r for r in pending_all
+                       if r.get("helper_member_id") == member_id and r.get("status") in HELPER_ACTION_STATUSES]
+    blocks.append(_section(f"🌱 지원 요청 — 내가 보낸 진행중 {len(my_open)}건 · 내가 응답할 것 {len(needs_my_action)}건"))
 
     return blocks
 
@@ -187,13 +193,14 @@ def _notification_blocks(member, store):
 def _contribution_line(member, store):
     """
     도시 이미지 범례 기준: 역(🚉, 같은 팀 협업) / 항구(⚓, 다른 팀 협업) / 정원(🌱, 내가 도운 것 -
-    단방향). reports.collaboration.member_collaboration_summary()가 wish_match.py(confirmed)
-    기록에서 계산한 값을 그대로 쓴다 (평가 근거 패키지와 동일 로직 공유, 중복 방지).
+    단방향). reports.collaboration.member_collaboration_summary()가 wish_match.py의 완결된
+    협업 기록(COMPLETED_STATUSES: confirmed/completed)에서 계산한 값을 그대로 쓴다 (평가 근거
+    패키지와 동일 로직 공유, 중복 방지).
     """
     summary = member_collaboration_summary(member["member_id"], store, QUARTER_START, QUARTER_END)
     return _context(f"🚉 역 {summary['same_team_count']}(같은 팀 협업) · "
                      f"⚓ 항구 {summary['other_team_count']}(다른 팀 협업) · "
-                     f"🌱 정원 {len(summary['helped'])}(내가 도운 것)")
+                     f"🌱 씨앗 {len(summary['helped'])}(내가 도운 것)")
 
 
 def build_goal_dashboard_blocks(member, store, quarter, display_name=None):
