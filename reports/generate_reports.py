@@ -22,7 +22,7 @@ from .collaboration import member_collaboration_summary
 from .data_access import DataStore
 from .llm_client import generate_json
 from .priority import rank_team_goals
-from .progress import goal_stage, subgoal_stage
+from .progress import subgoal_stage
 
 QUARTER = "2026-Q2"
 QUARTER_START = date(2026, 4, 1)
@@ -95,13 +95,20 @@ def _maybe_generate(report_type, scope_id, period, prompt, input_payload, *, for
     return content
 
 
-def _subgoal_next_week_priorities(store, goals, week_logs):
+def _subgoal_next_week_priorities(store, goals, week_logs, week_start):
     """
     확인 요청(§5-1, "이 시스템의 관문") 대상 목록: 이번 주 로그가 하나도 안 걸린 하위목표(건물).
     goal 단위가 아니라 sub_goal 단위인 이유 -- §5-1의 "목표별 상태"가 애초에 "하위목표별
     완료/진행/미언급"으로 정의되어 있다. 아직 한 번도 손대지 않은(worked_days==0) 건물은
     "정체"가 아니라 그냥 "미착수"이므로 확인 대상에서 제외한다 (§4-3 "진행 정체" 판정 원칙과
     동일 -- 시작도 안 한 것에 막힘/보류를 묻는 건 무의미).
+
+    2026-07-28 정정: current_status(select의 initial_option)는 반드시 "이번 week_start"의
+    체크인만 쓴다 -- 완성본 §6-2 "선택은 다음 주간 확인까지 유효하다... 유효 기간을 두지 않으면
+    한 번의 선택이 계속 남아 화면이 실제와 어긋나게 된다"는 원칙 때문이다. 예전엔
+    store.latest_checkin(sub_goal_id) 를 주차 제한 없이 불러서, 몇 주 전에 고른 값이 계속
+    "이미 선택됨"으로 보였다(실제로는 다시 물어야 하는데). 지난 주차의 체크인은 여기서는
+    그냥 없는 것으로 취급한다 -- 매주 새로 묻는다.
     """
     week_log_ids = {log["log_id"] for log in week_logs}
     out = []
@@ -115,13 +122,33 @@ def _subgoal_next_week_priorities(store, goals, week_logs):
             p = subgoal_stage(store, sg["sub_goal_id"])
             if p["worked_days"] == 0:
                 continue  # 아직 미착수 -- 확인 대상 아님
-            existing = store.latest_checkin(sg["sub_goal_id"])
+            existing = store.latest_checkin(sg["sub_goal_id"], week_start=week_start)
             out.append({
                 "goal_id": g["goal_id"], "goal_title": g["title"],
                 "sub_goal_id": sg["sub_goal_id"], "title": sg["title"],
                 "reminder": "이번 주 업무일지에 언급 없음 - 상태를 선택해주세요",
                 "current_status": existing["status"] if existing else None,
             })
+    return out
+
+
+def _subgoal_weekly_status(store, goal_id, week_log_ids):
+    """§5-1 "목표별 상태" = 하위목표별 완료/진행/미언급 + 작업일 수. AI가 판단하는 게 아니라
+    이번 주 로그가 그 하위목표에 걸렸는지를 코드가 대조해서 결정한다(완료는 sub_goals.status,
+    즉 리더가 이미 확정한 사실만 반영 -- 본인완료 대기 중인 것은 아직 "완료"로 표시하지 않는다).
+    """
+    out = []
+    for sg in store.sub_goals(goal_id):
+        p = subgoal_stage(store, sg["sub_goal_id"])
+        if sg["status"] == "확정완료":
+            status = "완료"
+        else:
+            evidence_ids = set(store.evidence_log_ids_by_subgoal.get(sg["sub_goal_id"], []))
+            status = "진행" if evidence_ids & week_log_ids else "미언급"
+        out.append({
+            "sub_goal_id": sg["sub_goal_id"], "title": sg["title"],
+            "status": status, "worked_days": p["worked_days"],
+        })
     return out
 
 
@@ -147,10 +174,10 @@ def _postprocess_personal(content, store, goals, week_logs, week_start, week_end
         for item in content.get(key, []):
             item["log_ids"] = [lid for lid in item.get("log_ids", []) if lid in valid_log_ids]
 
-    # 목표별 진척(계수): worked_days/stage 는 LLM이 아니라 progress.py 가 로그 개수를 세어 계산
-    stage_by_goal = {g["goal_id"]: goal_stage(store, g["goal_id"]) for g in goals}
+    # §5-1 "목표별 상태": goal 단위 "구획"이 아니라 하위목표(건물) 단위 완료/진행/미언급 + 작업일수로
+    # 표시한다(2026-07-28 정정 -- 홈탭이 이미 건물 단위로 전환했는데 리포트만 옛 구획 개념에 남아있었음).
     for gp in content.get("goal_progress", []):
-        gp["progress"] = stage_by_goal.get(gp.get("goal_id"))
+        gp["sub_goals"] = _subgoal_weekly_status(store, gp.get("goal_id"), valid_log_ids)
 
     # 정성 목표 마일스톤(본인 보고): LLM 서술은 못 믿으니 구조화된 상태/근거는 코드가 확정해 덮어씀
     milestones_by_goal = {g["goal_id"]: store.goal_milestones(g["goal_id"]) for g in goals}
@@ -169,7 +196,7 @@ def _postprocess_personal(content, store, goals, week_logs, week_start, week_end
     # 확인 요청 = 다음 주 우선순위(대조): 이번 주 로그가 없었던 하위목표(건물)를 리마인드하고,
     # 본인이 Slack에서 진행중/대기/보류/막힘을 직접 고르게 한다(홈탭 크레인 표시 오버라이드 +
     # 코칭 카드 게이트로 이어짐). LLM 추정이 아니라 코드가 대조해서 만든 목록.
-    content["next_week_priorities"] = _subgoal_next_week_priorities(store, goals, week_logs)
+    content["next_week_priorities"] = _subgoal_next_week_priorities(store, goals, week_logs, week_start)
     return content
 
 

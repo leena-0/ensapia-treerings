@@ -13,7 +13,9 @@ PROMPT_VERSION 을 캐시 input_hash 에 포함시켜야 한다: 원본 데이�
 아래 PROMPT_VERSION 을 올릴 것.
 """
 
-PROMPT_VERSION = "2026-07-28.2"  # merge: one_on_one_agenda 필드 제거 + 코칭 카드 구조 병목 코드 탐지(coaching_signals)/확신도별 문형 반영
+PROMPT_VERSION = "2026-07-28.3"  # _postprocess_personal이 goal_progress[].sub_goals(하위목표별
+# 완료/진행/미언급)를 새로 주입 + next_week_priorities current_status가 이번 주차만 반영하도록
+# 정정 -- 프롬프트 문구는 안 바뀌었지만 postprocess 출력 모양이 바뀌어 캐시를 무효화해야 함
 
 SYSTEM_PREAMBLE = """당신은 엔서피아(ENSAPIA)의 인사 평가를 지원하는 어시스턴트입니다.
 엔서피아는 아바타/디지털 월드 서비스 기업으로 '리브리 아일랜드' 등을 운영합니다.

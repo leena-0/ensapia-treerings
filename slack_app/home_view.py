@@ -76,6 +76,13 @@ def _crane_state(business_days_since):
 # 본인이 주간 확인 요청에서 선택한 상태 -> 크레인 표시 오버라이드 (PDF 기획서 6-2절 표 그대로).
 # 자동 판정(freshness)보다 본인 선택이 우선한다 -- 단, 이 오버라이드보다 더 최근 작업 로그가
 # 있으면(재개) 자동 판정이 다시 이긴다 (_subgoal_display 에서 날짜 비교로 처리).
+# 유효기간(2026-07-28 추가): 완성본 §6-2 "선택은 다음 주간 확인까지 유효하다 ... 유효 기간을
+# 두지 않으면 한 번의 선택이 계속 남아 화면이 실제와 어긋나게 된다" -- 그 체크인이 담당하는
+# 주차(week_end) 이후 이 기간(영업일 아니라 달력 기준, 대략 한 주기+여유)이 지나면 오버라이드를
+# 그만 적용하고 자동 판정으로 돌아간다. 다음 주 리포트가 다시 물어보는 것과 별개로, 화면 자체가
+# 옛 선택에 무기한 붙잡히지 않게 하는 안전장치다.
+CHECKIN_VALID_DAYS = 9
+
 CHECKIN_OVERRIDE_DISPLAY = {
     "진행중": ("🏗", "작업 중 (기록엔 안 남았지만 본인 확인)"),
     "대기": ("⏸", "대기 중 (타인·외부 요인, 본인 표시)"),
@@ -99,7 +106,11 @@ def _subgoal_display(sg, p, store=None):
         return "⬜", "_미착수_"
 
     checkin = store.latest_checkin(sg["sub_goal_id"]) if store else None
-    if checkin and (p["last_date"] is None or checkin["reported_at"][:10] >= p["last_date"]):
+    checkin_valid = False
+    if checkin:
+        days_since_week_end = (date.today() - date.fromisoformat(checkin["week_end"])).days
+        checkin_valid = days_since_week_end <= CHECKIN_VALID_DAYS
+    if checkin and checkin_valid and (p["last_date"] is None or checkin["reported_at"][:10] >= p["last_date"]):
         icon, state_text = CHECKIN_OVERRIDE_DISPLAY.get(checkin["status"]) or _crane_state(p["business_days_since"])
     else:
         icon, state_text = _crane_state(p["business_days_since"])
@@ -308,9 +319,14 @@ def build_personal_blocks(member, cache_record, display_name=None, permalinks=No
     ]
 
     for gp in content.get("goal_progress", []):
-        p = gp.get("progress") or {}
-        progress_line = (f"구획 {p.get('stage', '?')}/{p.get('total_stages', '?')} "
-                          f"(누적 {p.get('worked_days', '?')}일 작업) · {p.get('freshness', '')}") if p else ""
+        # §5-1 "목표별 상태" = 하위목표(건물) 단위 완료/진행/미언급 (2026-07-28, 옛 goal 단위
+        # "구획" 표시를 대체 -- 홈탭이 이미 건물 단위로 전환한 것과 맞춤).
+        sub_goals = gp.get("sub_goals") or []
+        icon_map = {"완료": "✅", "진행": "🚧", "미언급": "⬜"}
+        progress_line = " · ".join(
+            f"{icon_map.get(sg['status'], '•')}{sg['title']}({sg['status']}, {sg['worked_days']}일)"
+            for sg in sub_goals
+        )
         citations = gp.get("citations", [])
         cite_text = " · ".join(
             f"{_log_ref(c.get('log_id'), permalinks)}({c.get('date')})" for c in citations
