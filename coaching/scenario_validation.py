@@ -145,6 +145,10 @@ class FakeStore:
             mid: [{"log_id": f"{mid}-{i:02d}", "date": d, "text": t} for i, (d, t) in enumerate(entries, 1)]
             for mid, entries in logs.items()
         }
+        # detect_blocked_escalation(§7 세 번째 긴급 조건)이 추가되면서 load_weekly_status가
+        # 이 속성을 요구하게 됐다 -- 이 시나리오들엔 자기신고 blocked 케이스가 없으므로 빈
+        # 목록이면 충분하다(subgoal_checkins_for_team이 빈 리스트를 순회하고 끝남).
+        self.subgoal_checkin_rows = []
 
 
 def _print_report(result):

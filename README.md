@@ -37,8 +37,10 @@
 
 - **저장소**: SQLite(`data/treerings.db`) — 원본 데이터(멤버/목표/KPI/업무일지)와 `report_cache`
   (LLM 생성 결과 캐시)를 함께 담는다.
-- **LLM**: `litellm` 기반, `LLM_PROVIDER`로 프로바이더 전환(기본 Upstage Solar Pro, `gemini`로
-  전환 가능). 코칭 카드 파이프라인은 `--no-llm`으로 LLM 없이도 100% 동작(코드 템플릿 서술).
+- **LLM**: `litellm` 기반으로 Gemini(`gemini-flash-latest`)를 사용, 무료 티어 한도(일일 20건) 내에서
+  구현·검증함. 한도를 넘으면 `LLM_PROVIDER`+`LLM_MODEL`에 이미 가진 다른 LLM API 키를 그대로
+  넣어 코드 수정 없이 전환 가능(litellm이 지원하는 모델이면 어떤 프로바이더든 상관없음). 코칭 카드
+  파이프라인은 `--no-llm`으로 LLM 없이도 100% 동작(코드 템플릿 서술).
 - **코칭 카드**는 별도 엔진(`coaching/`, LangGraph): 탐지·근거검증·점수·선별은 전부 코드, LLM은
   마지막에 서술만 담당. 자세한 설계는 `coaching/README.md` 참고.
 - **Slack 연동**은 Socket Mode(`slack_app/socket_app.py`) — 공인 HTTPS 엔드포인트 없이 슬래시
