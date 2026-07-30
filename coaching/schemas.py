@@ -41,7 +41,8 @@ class WeeklyStatusSelection(BaseModel):
 class TeamContext(BaseModel):
     team_id: str
     members: list[dict]        # {user_id, user_name, role}
-    manager_id: str            # 카드 수신자(관리 책임자)
+    manager_id: str            # 카드 수신자(1차평가자 = 관리 책임자)
+    senior_manager_id: str = ""  # 2차평가자. 없으면 빈 문자열(팀에 2차평가자가 없는 경우)
     period_start: date
     period_end: date           # 격주이므로 14일 가정
 

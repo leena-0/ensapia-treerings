@@ -53,8 +53,13 @@ def build_team_context(store: DataStore, team: str, period_start: date, period_e
     # 카드 수신자 = 관리 책임자(1차평가자). 없으면 첫 멤버로 폴백.
     manager = next((m["user_id"] for m in members if m["role"] == "1차평가자"),
                    members[0]["user_id"] if members else "")
+    # 2차평가자: 1차평가자 본인이 카드 대상(subjects)일 때 그 카드를 올려보낼 곳.
+    # 없는 팀도 있을 수 있으므로 폴백 없이 빈 문자열로 둔다(그 경우 send_team_coaching.py가
+    # 1차평가자 본인 관련 카드도 그대로 1차평가자에게 남겨둔다 -- 자기참조 문제보다
+    # 카드를 아예 못 받는 쪽이 더 나쁘다고 판단).
+    senior = next((m["user_id"] for m in members if m["role"] == "2차평가자"), "")
     return TeamContext(team_id=team, members=members, manager_id=manager,
-                       period_start=period_start, period_end=period_end)
+                       senior_manager_id=senior, period_start=period_start, period_end=period_end)
 
 
 def load_weekly_status(team: str, path: str | None = None, store: DataStore | None = None) -> list[WeeklyStatusSelection]:
